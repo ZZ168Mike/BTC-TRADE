@@ -1028,6 +1028,7 @@ function closePaperPosition(candle,candleIdx,reason){
 }
 
 function paperTradingTick(){
+  if(isServerMode)return; // Server handles trading, we just display
   if(!currentStrategy||paperAccount.balance<10)return;
   if(candles15m.length<40)return;
   var idx=candles15m.length-2; // evaluate on the just-completed candle
@@ -1576,14 +1577,11 @@ function saveStrategy(){
 function loadEvolvedStrategy(){
   if(!currentStrategy)return;
   var fileInput=document.getElementById('strategy-file-input');
-  // Trigger file picker for evolved JSON
-  // User selects btc_strategy_evolved.json via the existing Load button (handled by loadStrategyFile)
 }
 
-// Try auto-load evolved strategy on startup (works with HTTP, not file://)
 async function autoLoadEvolved(){
   try{
-    var resp=await fetch('btc_strategy_evolved.json?_='+Date.now());
+    var resp=await fetch('btc_strategy_evolve.json?_='+Date.now());
     if(!resp.ok)return;
     var json=await resp.json();
     if(!json.name||!json.params)return;
@@ -1593,25 +1591,57 @@ async function autoLoadEvolved(){
     currentStrategy=evolved;
     window.__loadedStrategy=evolved;
     updateStrategyUI();
-    addLog('[Sys] Loaded evolved strategy: '+evolved.name+' v'+evolved.version+' (gen '+evolved.generation+')');
+    addLog('[Server] Strategy: '+evolved.name+' v'+evolved.version+' (gen '+evolved.generation+')');
     if(json.backtest){
-      addLog('[Sys] Offline result: +'+json.backtest.totalReturn+'% win '+json.backtest.winRate+'% trades '+json.backtest.closedTrades);
+      addLog('[Server] Backtest: +'+json.backtest.totalReturn+'% win '+json.backtest.winRate+'% trades '+json.backtest.closedTrades);
     }
-  }catch(e){/* file:// or network error — user can use Load button instead */}
+    if(json.evolvedAt)addLog('[Server] Evolved at: '+json.evolvedAt);
+  }catch(e){/* not available */}
+}
+
+let isServerMode=false;
+async function loadServerState(){
+  await autoLoadEvolved();
+  try{
+    var stateResp=await fetch('paper_state.json?_='+Date.now());
+    if(!stateResp.ok)return;
+    var st=await stateResp.json();
+    if(st.initialCapital===undefined)return;
+    isServerMode=true;
+    paperAccount.initialCapital=st.initialCapital||1000;
+    paperAccount.balance=st.balance||1000;
+    paperAccount.position=st.position||null;
+    paperAccount.orders=st.orders||[];
+    paperAccount.closedTrades=st.closedTrades||[];
+    paperAccount.equityHistory=st.equityHistory||[];
+    paperAccount.totalTrades=st.totalTrades||0;
+    paperAccount.winningTrades=st.winningTrades||0;
+    paperAccount.losingTrades=st.losingTrades||0;
+    paperAccount.orderIdSeq=st.orderIdSeq||0;
+    if(st.strategyHistory)evolutionState.strategyHistory=st.strategyHistory;
+    if(st.lastMarketRegime)evolutionState.lastMarketRegime=st.lastMarketRegime;
+    if(st.lastVolatility!==undefined)evolutionState.lastVolatility=st.lastVolatility;
+    if(st.recentTrades)evolutionState._recentTrades=st.recentTrades;
+    if(st.lastRun)addLog('[Server] Last run: '+st.lastRun);
+    if(st.runCount)addLog('[Server] Runs: '+st.runCount);
+    var eq=paperAccount.balance;
+    if(paperAccount.position&&cP>0)eq+=paperAccount.position.qty*cP;
+    addLog('[Server] Equity: $'+eq.toFixed(2)+' | '+paperAccount.closedTrades.length+' trades | Mode: GitHub Pages');
+  }catch(e){/* local mode */}
 }
 
 
 // ===== Init =====
 async function init(){
   apUI();
-  initPaperAccount();initEvolution();initL();initStrategy();
+  initPaperAccount();initEvolution();initL();
   renderLiveOrders();renderClosedTrades();renderPaperEquityChart('all');
-  await autoLoadEvolved(); // Try to load evolved strategy (HTTP mode)
+  await loadServerState(); // Load server state (GitHub Pages) or fallback to local
+  if(!currentStrategy)initStrategy(); // Default strategy if no server version
 
   let label=src()==='okx'?'OKX Live':src()==='binance'?'Binance REST':(CFG.cu||'Custom');
   document.getElementById('source-label').textContent=label;
 
-  // Load display candles
   let ok=await fetchCandles(currentPeriod);
   if(!ok){
     addLog('[Sys] Using mock candles');
@@ -1627,18 +1657,16 @@ async function init(){
     renderLeftCharts();
   }
 
-  // Load 15m candles for paper trading
   await fetchCandles15m();
   if(candles15m.length>0){
-    addLog('[Paper] Ready with $'+paperAccount.initialCapital+' initial capital');
+    if(isServerMode)addLog('[Server] Display mode — trades executed by GitHub Actions');
+    else addLog('[Paper] Ready with $'+paperAccount.initialCapital+' initial capital');
   }
 
-  // Connect charts for synchronized zoom & crosshair
   echarts.connect('btc_group');
-
   startPoll();
   setInterval(uiTick,1000);
-  startEvolution();
+  if(!isServerMode)startEvolution();
   renderEvolutionStatus();
 }
 init();

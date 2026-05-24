@@ -1,0 +1,18 @@
+{
+  "balance": 1000,
+  "initialCapital": 1000,
+  "position": null,
+  "orders": [],
+  "closedTrades": [],
+  "equityHistory": [],
+  "totalTrades": 0,
+  "winningTrades": 0,
+  "losingTrades": 0,
+  "orderIdSeq": 0,
+  "strategyHistory": [],
+  "lastMarketRegime": "neutral",
+  "lastVolatility": 0,
+  "recentTrades": [],
+  "lastRun": null,
+  "runCount": 0
+}

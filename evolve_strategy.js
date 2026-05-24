@@ -8,7 +8,7 @@ const vm = require('vm');
 const path = require('path');
 
 const HISTORY_FILE = path.join(__dirname, 'btc_15m_history.json');
-const OUTPUT_FILE = path.join(__dirname, 'btc_strategy_evolved.json');
+const OUTPUT_FILE = path.join(__dirname, 'btc_strategy_evolve.json');
 const STRATEGY_FILE = path.join(__dirname, 'btc_strategy.js');
 
 const args = process.argv.slice(2);
