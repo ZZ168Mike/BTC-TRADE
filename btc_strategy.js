@@ -248,11 +248,12 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
       jawPeriod: 13, teethPeriod: 8, lipsPeriod: 5,
       aoFast: 5, aoSlow: 34,
       leverage: 200,
-      positionSize: 0.5,
-      stopLoss: 0.0050, takeProfit: 0.0050,
-      trailStop: 0.015, maxBars: 50,
+      positionSize: 0.2,
+      stopLoss: 0.0040, takeProfit: 0.0100,
+      trailStop: 0.02, maxBars: 50,
       minSpread: 0.0005, minVolumeRatio: 0.3,
-      rsiMax: 85, rsiMin: 15
+      rsiMax: 85, rsiMin: 15,
+      minSignalScore: 2.5
     },
 
     entryRules: entryRules || [
@@ -341,7 +342,8 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
         var score = sig.strength * rule.weight;
         if (score > bestScore) { bestSignal = sig; bestScore = score; }
       }
-      return bestSignal;
+      var minScore = this.params.minSignalScore || 0;
+	      return (bestScore >= minScore) ? bestSignal : null;
     },
 
     // ---- Check exit conditions ----
@@ -576,8 +578,8 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
           if (key === 'lipsPeriod') newVal = Math.max(3, Math.min(8, newVal));
           if (key === 'aoFast') newVal = Math.max(3, Math.min(8, newVal));
           if (key === 'aoSlow') newVal = Math.max(21, Math.min(55, newVal));
-          if (key === 'stopLoss') newVal = Math.max(0.001, Math.min(0.05, newVal));
-          if (key === 'takeProfit') newVal = Math.max(0.001, Math.min(0.10, newVal));
+          if (key === 'stopLoss') newVal = Math.max(0.001, Math.min(0.03, newVal));
+          if (key === 'takeProfit') newVal = Math.max(0.003, Math.min(0.06, newVal));
           if (key === 'leverage') newVal = Math.round(Math.max(10, Math.min(200, newVal)));
           mutant.params[key] = +newVal.toFixed(4);
         }
