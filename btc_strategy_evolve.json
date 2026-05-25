@@ -1,133 +1,47 @@
 {
-  "name": "Evo-2026-05-24",
-  "version": "5.2",
-  "description": "Evolved from Evo-2026-05-24 (8 gens, pop 10)",
+  "name": "Aggro-2026-05-25",
+  "version": "1.1",
+  "description": "Aggressive 200x strategy — signal-based exits, 100% capital TP, self-evolving",
   "generation": 0,
-  "parentInfo": "original",
+  "parentInfo": "Chaos v2.0 aggressive fork",
   "params": {
-    "jawPeriod": 14,
+    "jawPeriod": 13,
     "teethPeriod": 8,
-    "lipsPeriod": 4,
+    "lipsPeriod": 5,
     "aoFast": 5,
-    "aoSlow": 45,
-    "positionSize": 0.95,
-    "stopLoss": 0.0348,
-    "takeProfit": 0.0424,
-    "trailStop": 0.0382,
+    "aoSlow": 34,
+    "leverage": 200,
+    "positionSize": 0.5,
+    "stopLoss": 0.0050,
+    "takeProfit": 0.0050,
+    "trailStop": 0.015,
     "maxBars": 50,
     "minSpread": 0.0005,
-    "minVolumeRatio": 0.5453,
-    "rsiMax": 75,
-    "rsiMin": 25
+    "minVolumeRatio": 0.3,
+    "rsiMax": 85,
+    "rsiMin": 15
   },
   "entryRules": [
-    {
-      "id": "e1",
-      "type": "fractal_breakout",
-      "params": {
-        "lookback": 3
-      },
-      "weight": 0.87,
-      "enabled": false
-    },
-    {
-      "id": "e2",
-      "type": "alligator_align",
-      "params": {},
-      "weight": 0.45,
-      "enabled": true
-    },
-    {
-      "id": "e3",
-      "type": "lips_cross",
-      "params": {},
-      "weight": 0.26,
-      "enabled": true
-    },
-    {
-      "id": "e4",
-      "type": "ao_zero_cross",
-      "params": {},
-      "weight": 0.72,
-      "enabled": true
-    },
-    {
-      "id": "e5",
-      "type": "ma_cross",
-      "params": {
-        "fastPeriod": 7,
-        "slowPeriod": 13
-      },
-      "weight": 0.6,
-      "enabled": false
-    }
+    { "id": "e1", "type": "fractal_breakout", "params": { "lookback": 2 }, "weight": 1.0, "enabled": true },
+    { "id": "e2", "type": "alligator_align", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "e3", "type": "lips_cross", "params": {}, "weight": 0.8, "enabled": true },
+    { "id": "e4", "type": "ao_zero_cross", "params": {}, "weight": 0.9, "enabled": true },
+    { "id": "e5", "type": "ma_cross", "params": { "fastPeriod": 5, "slowPeriod": 10 }, "weight": 0.6, "enabled": true }
   ],
   "exitRules": [
-    {
-      "id": "x4",
-      "type": "signal_reverse",
-      "params": {},
-      "weight": 0.43,
-      "enabled": false
-    },
-    {
-      "id": "x5",
-      "type": "lips_reverse",
-      "params": {},
-      "weight": 0.46,
-      "enabled": false
-    },
-    {
-      "id": "x3",
-      "type": "trailing_stop",
-      "params": {},
-      "weight": 0.8,
-      "enabled": true
-    },
-    {
-      "id": "x1",
-      "type": "stop_loss",
-      "params": {},
-      "weight": 1,
-      "enabled": true
-    },
-    {
-      "id": "x2",
-      "type": "take_profit",
-      "params": {},
-      "weight": 0.81,
-      "enabled": false
-    }
+    { "id": "x1", "type": "stop_loss", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "x2", "type": "take_profit", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "x3", "type": "trailing_stop", "params": {}, "weight": 0.9, "enabled": true },
+    { "id": "x4", "type": "signal_reverse", "params": {}, "weight": 0.8, "enabled": true },
+    { "id": "x5", "type": "lips_reverse", "params": {}, "weight": 0.3, "enabled": false },
+    { "id": "x6", "type": "time_exit", "params": {}, "weight": 0.3, "enabled": false }
   ],
   "filterRules": [
-    {
-      "id": "f3",
-      "type": "trend_align",
-      "params": {},
-      "weight": 0.38,
-      "enabled": true
-    },
-    {
-      "id": "f5",
-      "type": "rsi_ok",
-      "params": {},
-      "weight": 0.4,
-      "enabled": false
-    },
-    {
-      "id": "f1",
-      "type": "ao_direction",
-      "params": {},
-      "weight": 0.8,
-      "enabled": false
-    },
-    {
-      "id": "f2",
-      "type": "alligator_sleeping",
-      "params": {},
-      "weight": 1,
-      "enabled": false
-    }
+    { "id": "f1", "type": "ao_direction", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "f2", "type": "alligator_sleeping", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "f3", "type": "trend_align", "params": {}, "weight": 0.5, "enabled": false },
+    { "id": "f4", "type": "volume_ok", "params": {}, "weight": 0.3, "enabled": false },
+    { "id": "f5", "type": "rsi_ok", "params": {}, "weight": 0.4, "enabled": false }
   ],
-  "savedAt": "2026-05-24T12:40:21"
+  "savedAt": "2026-05-25T00:00:00"
 }

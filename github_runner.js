@@ -154,7 +154,9 @@ async function main() {
   // Update equity history with latest price
   const lastCandle = recentCandles[recentCandles.length - 1];
   const latestPrice = lastCandle.close;
-  const equity = state.balance + (state.position ? state.position.qty * latestPrice : 0);
+  const equity = state.balance + (state.position
+    ? state.position.margin + (latestPrice - state.position.entryPrice) * state.position.qty
+    : 0);
   const lastEquityEntry = state.equityHistory.length > 0 ? state.equityHistory[state.equityHistory.length - 1] : null;
   if (!lastEquityEntry || lastEquityEntry.time < lastCandle.time) {
     state.equityHistory.push({ time: lastCandle.time, equity: Math.round(equity * 100) / 100 });
@@ -198,9 +200,13 @@ async function main() {
         }
 
         if (exitReason) {
-          const pnl = (candle.close - state.position.entryPrice) * state.position.qty;
-          state.balance += state.position.qty * candle.close;
-          const pnlPct = ((candle.close - state.position.entryPrice) / state.position.entryPrice * 100).toFixed(2);
+          let pnl = (candle.close - state.position.entryPrice) * state.position.qty;
+          const margin = state.position.margin || (state.initialCapital * strategy.params.positionSize);
+          // Liquidation check: loss cannot exceed margin
+          if (pnl < -margin) pnl = -margin;
+          state.balance += margin + pnl;
+          const pnlPct = margin > 0 ? (pnl / margin * 100).toFixed(1) : '0';
+          const lev = state.position.leverage || 1;
           state.orders.push({
             id: ++state.orderIdSeq, time: formatTime(candle.time), side: 'Sell',
             price: '$' + candle.close.toFixed(1), qty: state.position.qty.toFixed(6) + ' BTC',
@@ -209,11 +215,12 @@ async function main() {
           state.closedTrades.push({
             entryTime: formatTime(state.position.entryTime), exitTime: formatTime(candle.time),
             side: 'Long', entryPrice: state.position.entryPrice, exitPrice: candle.close,
-            qty: state.position.qty, pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPct,
+            qty: state.position.qty, margin: Math.round(margin * 100) / 100,
+            pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPct + '%', leverage: lev + 'x',
             reason: exitReason, barsHeld: i - (state.position._entryIdx || 0)
           });
           if (pnl > 0) state.winningTrades++; else state.losingTrades++;
-          state.recentTrades.push({ pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPct, reason: exitReason, time: Date.now() });
+          state.recentTrades.push({ pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPct + '%', reason: exitReason, time: Date.now() });
           if (state.recentTrades.length > 50) state.recentTrades.shift();
           state.position = null;
           newTrades++;
@@ -223,23 +230,26 @@ async function main() {
         // Check entry signal
         const signal = strategy.generateSignal(candlesToProcess, i);
         if (signal && signal.type === 'BUY') {
-          const amount = state.balance * strategy.params.positionSize;
-          const qty = amount / candle.close;
+          const lev = strategy.params.leverage || 1;
+          const margin = state.balance * strategy.params.positionSize;
+          const qty = (margin * lev) / candle.close;
           if (qty * candle.close >= 10) {
             state.position = {
               side: 'BUY', qty: qty, entryPrice: candle.close,
               entryTime: candle.time, _entryIdx: i, _trailHi: candle.high,
+              margin: margin, leverage: lev,
               _exitRules: JSON.parse(JSON.stringify(strategy.exitRules))
             };
-            state.balance -= amount;
+            state.balance -= margin;
             state.orders.push({
               id: ++state.orderIdSeq, time: formatTime(candle.time), side: 'Buy',
               price: '$' + candle.close.toFixed(1), qty: qty.toFixed(6) + ' BTC',
+              margin: '$' + margin.toFixed(2), leverage: lev + 'x',
               status: 'filled', type: 'market', reason: signal.reason
             });
             state.totalTrades++;
             newTrades++;
-            log('BUY @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' ' + signal.reason);
+            log('BUY @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x ' + signal.reason);
           }
         }
       }
@@ -319,7 +329,9 @@ async function main() {
 
   // Save state
   saveState(state);
-  const finalEquity = state.balance + (state.position ? state.position.qty * latestPrice : 0);
+  const finalEquity = state.balance + (state.position
+    ? state.position.margin + (latestPrice - state.position.entryPrice) * state.position.qty
+    : 0);
   log('Run complete. Equity: $' + finalEquity.toFixed(2) + ' | ' + state.closedTrades.length + ' trades | P&L: $' + (finalEquity - state.initialCapital).toFixed(2));
 }
 

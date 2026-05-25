@@ -131,12 +131,16 @@ var RuleEvaluators = {
   'stop_loss': function(candles, i, position, ctx) {
     if (!position || position.side !== 'BUY') return null;
     var pnl = (candles[i].close - position.entryPrice) / position.entryPrice;
-    return (pnl <= -ctx.params.stopLoss) ? 'Stop Loss (-' + (ctx.params.stopLoss*100).toFixed(1) + '%)' : null;
+    var lev = ctx.params.leverage || 1;
+    var capLoss = pnl * lev * 100;
+    return (pnl <= -ctx.params.stopLoss) ? 'Stop Loss (' + capLoss.toFixed(0) + '% capital @' + lev + 'x)' : null;
   },
   'take_profit': function(candles, i, position, ctx) {
     if (!position || position.side !== 'BUY') return null;
     var pnl = (candles[i].close - position.entryPrice) / position.entryPrice;
-    return (pnl >= ctx.params.takeProfit) ? 'Take Profit (+' + (ctx.params.takeProfit*100).toFixed(1) + '%)' : null;
+    var lev = ctx.params.leverage || 1;
+    var capGain = pnl * lev * 100;
+    return (pnl >= ctx.params.takeProfit) ? 'Take Profit (+' + capGain.toFixed(0) + '% capital @' + lev + 'x)' : null;
   },
   'trailing_stop': function(candles, i, position, ctx) {
     if (!position || position.side !== 'BUY') return null;
@@ -208,22 +212,22 @@ var RuleEvaluators = {
 // Available rule templates for generating new rules during evolution
 var RuleTemplates = {
   entry: [
-    { type: 'fractal_breakout', params: { lookback: 3 }, weight: 1.0, enabled: true },
-    { type: 'alligator_align', params: {}, weight: 0.8, enabled: true },
-    { type: 'lips_cross', params: {}, weight: 0.5, enabled: true },
-    { type: 'ao_zero_cross', params: {}, weight: 0.7, enabled: false },
-    { type: 'ma_cross', params: { fastPeriod: 5, slowPeriod: 10 }, weight: 0.4, enabled: false }
+    { type: 'fractal_breakout', params: { lookback: 2 }, weight: 1.0, enabled: true },
+    { type: 'alligator_align', params: {}, weight: 1.0, enabled: true },
+    { type: 'lips_cross', params: {}, weight: 0.8, enabled: true },
+    { type: 'ao_zero_cross', params: {}, weight: 0.9, enabled: true },
+    { type: 'ma_cross', params: { fastPeriod: 5, slowPeriod: 10 }, weight: 0.6, enabled: true }
   ],
   exit: [
     { type: 'stop_loss', params: {}, weight: 1.0, enabled: true },
     { type: 'take_profit', params: {}, weight: 1.0, enabled: true },
-    { type: 'trailing_stop', params: {}, weight: 0.8, enabled: true },
-    { type: 'signal_reverse', params: {}, weight: 0.6, enabled: false },
-    { type: 'lips_reverse', params: {}, weight: 0.5, enabled: true },
+    { type: 'trailing_stop', params: {}, weight: 0.9, enabled: true },
+    { type: 'signal_reverse', params: {}, weight: 0.8, enabled: true },
+    { type: 'lips_reverse', params: {}, weight: 0.5, enabled: false },
     { type: 'time_exit', params: {}, weight: 0.3, enabled: false }
   ],
   filter: [
-    { type: 'ao_direction', params: {}, weight: 0.8, enabled: true },
+    { type: 'ao_direction', params: {}, weight: 1.0, enabled: true },
     { type: 'alligator_sleeping', params: {}, weight: 1.0, enabled: true },
     { type: 'trend_align', params: {}, weight: 0.5, enabled: false },
     { type: 'volume_ok', params: {}, weight: 0.3, enabled: false },
@@ -243,32 +247,33 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
     params: params || {
       jawPeriod: 13, teethPeriod: 8, lipsPeriod: 5,
       aoFast: 5, aoSlow: 34,
-      positionSize: 0.95,
-      stopLoss: 0.03, takeProfit: 0.05,
-      trailStop: 0.04, maxBars: 50,
-      minSpread: 0.0003, minVolumeRatio: 0.5,
-      rsiMax: 75, rsiMin: 25
+      leverage: 200,
+      positionSize: 0.5,
+      stopLoss: 0.0050, takeProfit: 0.0050,
+      trailStop: 0.015, maxBars: 50,
+      minSpread: 0.0005, minVolumeRatio: 0.3,
+      rsiMax: 85, rsiMin: 15
     },
 
     entryRules: entryRules || [
-      { id: 'e1', type: 'fractal_breakout', params: { lookback: 3 }, weight: 1.0, enabled: true },
-      { id: 'e2', type: 'alligator_align', params: {}, weight: 0.8, enabled: true },
-      { id: 'e3', type: 'lips_cross', params: {}, weight: 0.5, enabled: true },
-      { id: 'e4', type: 'ao_zero_cross', params: {}, weight: 0.7, enabled: false },
-      { id: 'e5', type: 'ma_cross', params: { fastPeriod: 5, slowPeriod: 10 }, weight: 0.4, enabled: false }
+      { id: 'e1', type: 'fractal_breakout', params: { lookback: 2 }, weight: 1.0, enabled: true },
+      { id: 'e2', type: 'alligator_align', params: {}, weight: 1.0, enabled: true },
+      { id: 'e3', type: 'lips_cross', params: {}, weight: 0.8, enabled: true },
+      { id: 'e4', type: 'ao_zero_cross', params: {}, weight: 0.9, enabled: true },
+      { id: 'e5', type: 'ma_cross', params: { fastPeriod: 5, slowPeriod: 10 }, weight: 0.6, enabled: true }
     ],
 
     exitRules: exitRules || [
       { id: 'x1', type: 'stop_loss', params: {}, weight: 1.0, enabled: true },
       { id: 'x2', type: 'take_profit', params: {}, weight: 1.0, enabled: true },
-      { id: 'x3', type: 'trailing_stop', params: {}, weight: 0.8, enabled: true },
-      { id: 'x4', type: 'signal_reverse', params: {}, weight: 0.6, enabled: false },
-      { id: 'x5', type: 'lips_reverse', params: {}, weight: 0.5, enabled: true },
+      { id: 'x3', type: 'trailing_stop', params: {}, weight: 0.9, enabled: true },
+      { id: 'x4', type: 'signal_reverse', params: {}, weight: 0.8, enabled: true },
+      { id: 'x5', type: 'lips_reverse', params: {}, weight: 0.3, enabled: false },
       { id: 'x6', type: 'time_exit', params: {}, weight: 0.3, enabled: false }
     ],
 
     filterRules: filterRules || [
-      { id: 'f1', type: 'ao_direction', params: {}, weight: 0.8, enabled: true },
+      { id: 'f1', type: 'ao_direction', params: {}, weight: 1.0, enabled: true },
       { id: 'f2', type: 'alligator_sleeping', params: {}, weight: 1.0, enabled: true },
       { id: 'f3', type: 'trend_align', params: {}, weight: 0.5, enabled: false },
       { id: 'f4', type: 'volume_ok', params: {}, weight: 0.3, enabled: false },
@@ -368,10 +373,12 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
           var exitReason = this._checkExit(candles, i, position, ctx);
           if (exitReason) {
             var pnl = (price - position.entryPrice) * position.qty;
-            capital += position.qty * price;
+            if (pnl < -position.margin) pnl = -position.margin;
+            capital += position.margin + pnl;
+            var pnlPct = position.margin > 0 ? (pnl / position.margin * 100) : 0;
             trades.push({ time: candles[i].time, type: 'SELL', price: price,
               qty: +position.qty.toFixed(6), pnl: +pnl.toFixed(2), reason: exitReason,
-              barsHeld: i - position.entryIndex });
+              pnlPct: +pnlPct.toFixed(1), barsHeld: i - position.entryIndex });
             position = null;
             continue;
           }
@@ -381,17 +388,20 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
         if (!signal) continue;
 
         if (signal.type === 'BUY' && !position) {
-          var amount = capital * this.params.positionSize;
-          var qty = amount / price;
-          position = { side: 'BUY', qty: qty, entryPrice: price, entryIndex: i, _trailHi: candles[i].high };
-          capital -= amount;
+          var margin = capital * this.params.positionSize;
+          var lev = this.params.leverage || 1;
+          var qty = (margin * lev) / price;
+          position = { side: 'BUY', qty: qty, entryPrice: price, entryIndex: i, _trailHi: candles[i].high, margin: margin, leverage: lev };
+          capital -= margin;
           trades.push({ time: candles[i].time, type: 'BUY', price: price,
             qty: +qty.toFixed(6), pnl: 0, reason: signal.reason + ' [s:' + signal.strength + ']' });
         }
         // Strong opposite signal closes position
         else if (signal.type === 'SELL' && signal.strength >= 3 && position && position.side === 'BUY') {
           var _pnl = (price - position.entryPrice) * position.qty;
-          capital += position.qty * price;
+          // Check liquidation: loss exceeds margin
+          if (_pnl < -position.margin) _pnl = -position.margin;
+          capital += position.margin + _pnl;
           trades.push({ time: candles[i].time, type: 'SELL', price: price,
             qty: +position.qty.toFixed(6), pnl: +_pnl.toFixed(2),
             reason: 'Reversal: ' + signal.reason, barsHeld: i - position.entryIndex });
@@ -403,10 +413,12 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
       if (position) {
         var lastPx = candles[candles.length - 1].close;
         var endPnl = (lastPx - position.entryPrice) * position.qty;
-        capital += position.qty * lastPx;
+        if (endPnl < -position.margin) endPnl = -position.margin;
+        capital += position.margin + endPnl;
+        var endPnlPct = position.margin > 0 ? (endPnl / position.margin * 100) : 0;
         trades.push({ time: candles[candles.length - 1].time, type: 'SELL', price: lastPx,
           qty: +position.qty.toFixed(6), pnl: +endPnl.toFixed(2), reason: 'End of backtest',
-          barsHeld: candles.length - 1 - position.entryIndex });
+          pnlPct: +endPnlPct.toFixed(1), barsHeld: candles.length - 1 - position.entryIndex });
       }
 
       var sellTrades = trades.filter(function(t) { return t.type === 'SELL'; });
@@ -549,7 +561,7 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
       var ruleIdCounter = 100;
 
       // --- Parameter mutation (always) ---
-      var paramKeys = ['jawPeriod','teethPeriod','lipsPeriod','aoFast','aoSlow','stopLoss','takeProfit','trailStop','minSpread','minVolumeRatio'];
+      var paramKeys = ['jawPeriod','teethPeriod','lipsPeriod','aoFast','aoSlow','leverage','stopLoss','takeProfit','trailStop','minSpread','minVolumeRatio'];
       for (var pk = 0; pk < paramKeys.length; pk++) {
         var key = paramKeys[pk];
         if (Math.random() < 0.35) {
@@ -564,8 +576,9 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
           if (key === 'lipsPeriod') newVal = Math.max(3, Math.min(8, newVal));
           if (key === 'aoFast') newVal = Math.max(3, Math.min(8, newVal));
           if (key === 'aoSlow') newVal = Math.max(21, Math.min(55, newVal));
-          if (key === 'stopLoss') newVal = Math.max(0.005, Math.min(0.08, newVal));
-          if (key === 'takeProfit') newVal = Math.max(0.01, Math.min(0.15, newVal));
+          if (key === 'stopLoss') newVal = Math.max(0.001, Math.min(0.05, newVal));
+          if (key === 'takeProfit') newVal = Math.max(0.001, Math.min(0.10, newVal));
+          if (key === 'leverage') newVal = Math.round(Math.max(10, Math.min(200, newVal)));
           mutant.params[key] = +newVal.toFixed(4);
         }
       }
