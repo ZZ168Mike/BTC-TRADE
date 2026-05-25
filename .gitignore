@@ -1,0 +1,9 @@
+node_modules/
+package.json
+package-lock.json
+*.py
+__pycache__/
+.DS_Store
+*.png
+BTC0523.md
+btc0523.md

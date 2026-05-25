@@ -1,0 +1,246 @@
+{
+  "name": "Evo-2026-05-24",
+  "version": "3.2",
+  "description": "Evolved from Evo-2026-05-24 (15 gens, pop 4)",
+  "generation": 2,
+  "parentInfo": "Evo-2026-05-24 v3.1",
+  "params": {
+    "jawPeriod": 14,
+    "teethPeriod": 8,
+    "lipsPeriod": 5,
+    "aoFast": 5,
+    "aoSlow": 34,
+    "positionSize": 0.95,
+    "stopLoss": 0.0344,
+    "takeProfit": 0.05,
+    "trailStop": 0.04,
+    "maxBars": 50,
+    "minSpread": 0.0003,
+    "minVolumeRatio": 0.5,
+    "rsiMax": 75,
+    "rsiMin": 25
+  },
+  "entryRules": [
+    {
+      "id": "e1",
+      "type": "fractal_breakout",
+      "params": {
+        "lookback": 3
+      },
+      "weight": 1,
+      "enabled": true
+    },
+    {
+      "id": "e2",
+      "type": "alligator_align",
+      "params": {},
+      "weight": 0.8,
+      "enabled": true
+    },
+    {
+      "id": "e3",
+      "type": "lips_cross",
+      "params": {},
+      "weight": 0.5,
+      "enabled": true
+    },
+    {
+      "id": "e4",
+      "type": "ao_zero_cross",
+      "params": {},
+      "weight": 0.72,
+      "enabled": false
+    },
+    {
+      "id": "e5",
+      "type": "ma_cross",
+      "params": {
+        "fastPeriod": 5,
+        "slowPeriod": 10
+      },
+      "weight": 0.41,
+      "enabled": false
+    }
+  ],
+  "exitRules": [
+    {
+      "id": "x1",
+      "type": "stop_loss",
+      "params": {},
+      "weight": 1,
+      "enabled": true
+    },
+    {
+      "id": "x2",
+      "type": "take_profit",
+      "params": {},
+      "weight": 1,
+      "enabled": true
+    },
+    {
+      "id": "x3",
+      "type": "trailing_stop",
+      "params": {},
+      "weight": 0.8,
+      "enabled": true
+    },
+    {
+      "id": "x4",
+      "type": "signal_reverse",
+      "params": {},
+      "weight": 0.54,
+      "enabled": false
+    },
+    {
+      "id": "x5",
+      "type": "lips_reverse",
+      "params": {},
+      "weight": 0.46,
+      "enabled": true
+    },
+    {
+      "id": "x6",
+      "type": "time_exit",
+      "params": {},
+      "weight": 0.3,
+      "enabled": false
+    }
+  ],
+  "filterRules": [
+    {
+      "id": "f1",
+      "type": "ao_direction",
+      "params": {},
+      "weight": 0.8,
+      "enabled": true
+    },
+    {
+      "id": "f2",
+      "type": "alligator_sleeping",
+      "params": {},
+      "weight": 1,
+      "enabled": true
+    },
+    {
+      "id": "f3",
+      "type": "trend_align",
+      "params": {},
+      "weight": 0.5,
+      "enabled": true
+    },
+    {
+      "id": "f4",
+      "type": "volume_ok",
+      "params": {},
+      "weight": 0.32,
+      "enabled": false
+    },
+    {
+      "id": "f5",
+      "type": "rsi_ok",
+      "params": {},
+      "weight": 0.4,
+      "enabled": true
+    }
+  ],
+  "backtest": {
+    "totalReturn": -20.28,
+    "winRate": 27.8,
+    "closedTrades": 3729,
+    "totalEntries": 3729,
+    "candlesCount": 70080
+  },
+  "topStrategies": [
+    {
+      "totalReturn": -20.28,
+      "winRate": 27.8,
+      "closedTrades": 3729,
+      "params": {
+        "jawPeriod": 14,
+        "teethPeriod": 8,
+        "lipsPeriod": 5,
+        "aoFast": 5,
+        "aoSlow": 34,
+        "positionSize": 0.95,
+        "stopLoss": 0.0344,
+        "takeProfit": 0.05,
+        "trailStop": 0.04,
+        "maxBars": 50,
+        "minSpread": 0.0003,
+        "minVolumeRatio": 0.5,
+        "rsiMax": 75,
+        "rsiMin": 25
+      }
+    },
+    {
+      "totalReturn": -20.28,
+      "winRate": 27.8,
+      "closedTrades": 3729,
+      "params": {
+        "jawPeriod": 14,
+        "teethPeriod": 8,
+        "lipsPeriod": 5,
+        "aoFast": 5,
+        "aoSlow": 34,
+        "positionSize": 0.95,
+        "stopLoss": 0.0344,
+        "takeProfit": 0.05,
+        "trailStop": 0.04,
+        "maxBars": 50,
+        "minSpread": 0.0003,
+        "minVolumeRatio": 0.5,
+        "rsiMax": 75,
+        "rsiMin": 25
+      }
+    },
+    {
+      "totalReturn": -20.28,
+      "winRate": 27.8,
+      "closedTrades": 3729,
+      "params": {
+        "jawPeriod": 14,
+        "teethPeriod": 8,
+        "lipsPeriod": 5,
+        "aoFast": 5,
+        "aoSlow": 34,
+        "positionSize": 0.95,
+        "stopLoss": 0.0344,
+        "takeProfit": 0.05,
+        "trailStop": 0.04,
+        "maxBars": 50,
+        "minSpread": 0.0003,
+        "minVolumeRatio": 0.5,
+        "rsiMax": 75,
+        "rsiMin": 25
+      }
+    },
+    {
+      "totalReturn": -20.28,
+      "winRate": 27.8,
+      "closedTrades": 3729,
+      "params": {
+        "jawPeriod": 14,
+        "teethPeriod": 8,
+        "lipsPeriod": 5,
+        "aoFast": 5,
+        "aoSlow": 34,
+        "positionSize": 0.95,
+        "stopLoss": 0.0344,
+        "takeProfit": 0.05,
+        "trailStop": 0.04,
+        "maxBars": 50,
+        "minSpread": 0.0003,
+        "minVolumeRatio": 0.5,
+        "rsiMax": 75,
+        "rsiMin": 25
+      }
+    }
+  ],
+  "evolvedAt": "2026-05-24T03:27:58.738Z",
+  "dataRange": "2024-05-24T01:30 ~ 2026-05-24T01:15",
+  "iterations": {
+    "generations": 15,
+    "populationSize": 4,
+    "elapsedSeconds": 3
+  }
+}
