@@ -885,9 +885,36 @@ function saveEvolution(){
 }
 
 // ===== Strategy state (decoupled from market data) =====
+const STRATEGY_CACHE_LS='btc_strategy_cache_v1';
 let currentStrategy=null,backtestResult=null,iterationResult=null,strategyLogs=[];
+
+function saveCurrentStrategyToCache(){
+  try{
+    if(!currentStrategy||!currentStrategy.serialize)return;
+    localStorage.setItem(STRATEGY_CACHE_LS,currentStrategy.serialize());
+  }catch(e){}
+}
+function loadStrategyFromCache(){
+  try{
+    var raw=localStorage.getItem(STRATEGY_CACHE_LS);
+    if(!raw)return null;
+    var json=JSON.parse(raw);
+    if(!json.name||!json.params)return null;
+    var s=createStrategy(json.name,json.version,json.description,json.params,json.entryRules,json.exitRules,json.filterRules);
+    s.generation=json.generation||0;
+    s.parentInfo=json.parentInfo||'local-cache';
+    return s;
+  }catch(e){return null;}
+}
+
 function initStrategy(){
-  if(window.__loadedStrategy){
+  // Priority: localStorage cache > window.__loadedStrategy > default
+  var cached=loadStrategyFromCache();
+  if(cached){
+    currentStrategy=cached;
+    sLog('Loaded from cache: '+currentStrategy.name+' v'+currentStrategy.version+' (gen '+currentStrategy.generation+')');
+    updateStrategyUI();
+  } else if(window.__loadedStrategy){
     currentStrategy=window.__loadedStrategy;
     sLog('Loaded: '+currentStrategy.name+' v'+currentStrategy.version);
     updateStrategyUI();
@@ -1234,9 +1261,11 @@ function deployStrategy(newStrategy){
   });
   currentStrategy=newStrategy._clone();
   currentStrategy.name='Evo-'+new Date().toISOString().slice(0,10);
+  currentStrategy.generation=(currentStrategy.generation||0)+1;
   evolutionState.currentHistoryIndex=evolutionState.strategyHistory.length-1;
   updateStrategyUI();saveEvolution();
-  addLog('[Evo] Deployed new strategy: '+currentStrategy.name+' v'+currentStrategy.version);
+  saveCurrentStrategyToCache(); // Persist to localStorage for reload resilience
+  addLog('[Evo] Deployed new strategy: '+currentStrategy.name+' v'+currentStrategy.version+' (saved)');
 }
 function rollbackStrategy(){
   if(evolutionState.strategyHistory.length===0){addLog('[Evo] No history to rollback to');return}
@@ -1257,6 +1286,7 @@ function rollbackStrategy(){
       best.status='active';
       evolutionState.currentHistoryIndex=bestIdx;
       updateStrategyUI();saveEvolution();
+      saveCurrentStrategyToCache(); // Persist rollback
       addLog('[Evo] Rollback to: '+(best.name||'saved config'));
     }catch(e){addLog('[Evo] Rollback failed: '+e.message)}
   }
@@ -1477,6 +1507,7 @@ function loadStrategyFile(event){
             backtestReturn:config.backtest?config.backtest.totalReturn:0,livePnl:0
           });
           saveEvolution();
+          saveCurrentStrategyToCache(); // Persist loaded strategy
         }else if(config.params){
           // Simple params config — apply to current strategy
           if(!currentStrategy){
@@ -1493,6 +1524,7 @@ function loadStrategyFile(event){
           }
           sLog('Params loaded from '+file.name);
           updateStrategyUI();
+          saveCurrentStrategyToCache(); // Persist updated params
         }
       }else{
         // .js strategy file — execute as new strategy
@@ -1503,6 +1535,7 @@ function loadStrategyFile(event){
           backtestResult=null;iterationResult=null;
           sLog('Loaded: '+currentStrategy.name+' v'+currentStrategy.version);
           updateStrategyUI();
+          saveCurrentStrategyToCache();
           document.getElementById('backtest-results').style.display='none';
           document.getElementById('backtest-trades').style.display='none';
           document.getElementById('iteration-results').style.display='none';
@@ -1587,15 +1620,27 @@ async function autoLoadEvolved(){
     if(!json.name||!json.params)return;
     var evolved=createStrategy(json.name,json.version,json.description,json.params,json.entryRules,json.exitRules,json.filterRules);
     evolved.generation=json.generation||0;
-    evolved.parentInfo=json.parentInfo||'offline-evolution';
-    currentStrategy=evolved;
-    window.__loadedStrategy=evolved;
-    updateStrategyUI();
-    addLog('[Server] Strategy: '+evolved.name+' v'+evolved.version+' (gen '+evolved.generation+')');
-    if(json.backtest){
-      addLog('[Server] Backtest: +'+json.backtest.totalReturn+'% win '+json.backtest.winRate+'% trades '+json.backtest.closedTrades);
+    evolved.parentInfo=json.parentInfo||'server-evolution';
+    // Compare with localStorage cache — keep whichever is newer (higher generation)
+    var cached=loadStrategyFromCache();
+    if(cached && cached.generation >= evolved.generation){
+      addLog('[Server] Server gen '+evolved.generation+', cache gen '+cached.generation+' — keeping cache');
+      if(!currentStrategy || cached.generation >= (currentStrategy.generation||0)){
+        currentStrategy=cached;
+        window.__loadedStrategy=cached;
+        updateStrategyUI();
+      }
+    } else {
+      currentStrategy=evolved;
+      window.__loadedStrategy=evolved;
+      updateStrategyUI();
+      saveCurrentStrategyToCache(); // Sync cache with server
+      addLog('[Server] Strategy: '+evolved.name+' v'+evolved.version+' (gen '+evolved.generation+')');
+      if(json.backtest){
+        addLog('[Server] Backtest: +'+json.backtest.totalReturn+'% win '+json.backtest.winRate+'% trades '+json.backtest.closedTrades);
+      }
+      if(json.evolvedAt)addLog('[Server] Evolved at: '+json.evolvedAt);
     }
-    if(json.evolvedAt)addLog('[Server] Evolved at: '+json.evolvedAt);
   }catch(e){/* not available */}
 }
 
