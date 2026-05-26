@@ -11,16 +11,16 @@
     "aoFast": 5,
     "aoSlow": 34,
     "leverage": 200,
-    "positionSize": 0.2,
-    "stopLoss": 0.0040,
-    "takeProfit": 0.0100,
+    "positionSize": 1.0,
+    "stopLoss": 0.0050,
+    "takeProfit": 0.0050,
     "trailStop": 0.02,
     "maxBars": 50,
     "minSpread": 0.0005,
     "minVolumeRatio": 0.3,
     "rsiMax": 85,
     "rsiMin": 15,
-    "minSignalScore": 2.5
+    "minSignalScore": 1.0
   },
   "entryRules": [
     { "id": "e1", "type": "fractal_breakout", "params": { "lookback": 2 }, "weight": 1.0, "enabled": true },

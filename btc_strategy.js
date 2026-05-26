@@ -253,7 +253,7 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
       trailStop: 0.02, maxBars: 50,
       minSpread: 0.0005, minVolumeRatio: 0.3,
       rsiMax: 85, rsiMin: 15,
-      minSignalScore: 2.5
+      minSignalScore: 1.0
     },
 
     entryRules: entryRules || [
@@ -443,12 +443,32 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
     },
 
     // ---- Self-diagnosis: analyze losing trades to guide evolution ----
-    _diagnose: function(candles, btResult) {
+    _diagnose: function(candles, btResult, liveTrades) {
       var self = this;
       var ctx = this._buildContext(candles);
       var sellTrades = btResult.trades.filter(function(t) { return t.type === 'SELL'; });
       var losingTrades = sellTrades.filter(function(t) { return t.pnl < 0; });
       var diagnosis = { addFilters: [], removeFilters: [], addEntry: [], adjustParams: {} };
+
+      // Merge live trade feedback (higher priority than backtest analysis)
+      if (liveTrades && liveTrades.length > 0) {
+        var liveDiag = this._learnFromTrades(liveTrades, candles);
+        for (var ld = 0; ld < liveDiag.addFilters.length; ld++) {
+          if (diagnosis.addFilters.indexOf(liveDiag.addFilters[ld]) < 0) {
+            diagnosis.addFilters.push(liveDiag.addFilters[ld]);
+          }
+        }
+        for (var le = 0; le < liveDiag.addEntry.length; le++) {
+          if (diagnosis.addEntry.indexOf(liveDiag.addEntry[le]) < 0) {
+            diagnosis.addEntry.push(liveDiag.addEntry[le]);
+          }
+        }
+        for (var pk2 in liveDiag.adjustParams) {
+          if (liveDiag.adjustParams.hasOwnProperty(pk2)) {
+            diagnosis.adjustParams[pk2] = liveDiag.adjustParams[pk2];
+          }
+        }
+      }
 
       if (losingTrades.length === 0) {
         diagnosis.addEntry.push('ao_zero_cross');
@@ -544,6 +564,88 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
       return diagnosis;
     },
 
+    // ---- Live trade feedback learning ----
+    _learnFromTrades: function(tradeResults, candles) {
+      var self = this;
+      var diagnosis = { addFilters: [], removeFilters: [], addEntry: [], adjustParams: {} };
+      if (!tradeResults || tradeResults.length === 0) return diagnosis;
+
+      var lossFilters = {};
+      var winFilters = {};
+      var entryWins = {};
+      var entryLosses = {};
+      var totalWinPnlAbs = 0, totalLossPnlAbs = 0;
+      var winCount = 0, lossCount = 0;
+
+      var ctx = candles ? this._buildContext(candles) : null;
+
+      for (var t = 0; t < tradeResults.length; t++) {
+        var trade = tradeResults[t];
+        var isWin = trade.pnl > 0;
+        var et = trade.entryType || 'unknown';
+
+        if (isWin) {
+          entryWins[et] = (entryWins[et] || 0) + 1;
+          totalWinPnlAbs += Math.abs(trade.pnl || 0);
+          winCount++;
+        } else {
+          entryLosses[et] = (entryLosses[et] || 0) + 1;
+          totalLossPnlAbs += Math.abs(trade.pnl || 0);
+          lossCount++;
+        }
+
+        // Check which DISABLED filters would have blocked this trade's entry
+        if (ctx && trade.entryIdx !== undefined && trade.entryIdx >= 0) {
+          for (var f = 0; f < this.filterRules.length; f++) {
+            var fr = this.filterRules[f];
+            if (fr.enabled) continue;
+            if (!RuleEvaluators[fr.type]) continue;
+            var wouldPass = RuleEvaluators[fr.type](candles, trade.entryIdx, { type: 'BUY' }, ctx);
+            if (!wouldPass) {
+              if (isWin) {
+                winFilters[fr.type] = (winFilters[fr.type] || 0) + 1;
+              } else {
+                lossFilters[fr.type] = (lossFilters[fr.type] || 0) + 1;
+              }
+            }
+          }
+        }
+      }
+
+      // Enable filters that block many losses but few wins
+      for (var ft in lossFilters) {
+        if (!lossFilters.hasOwnProperty(ft)) continue;
+        var blockedLosses = lossFilters[ft] || 0;
+        var blockedWins = winFilters[ft] || 0;
+        var lossBlockRate = lossCount > 0 ? blockedLosses / lossCount : 0;
+        var winBlockRate = winCount > 0 ? blockedWins / winCount : 0;
+        if (lossBlockRate > 0.3 && winBlockRate < lossBlockRate) {
+          diagnosis.addFilters.push(ft);
+        }
+      }
+
+      // Boost entry rules with strong live win rate
+      for (var et2 in entryWins) {
+        if (!entryWins.hasOwnProperty(et2)) continue;
+        var w = entryWins[et2] || 0;
+        var l = entryLosses[et2] || 0;
+        if (w + l >= 2 && w / (w + l) >= 0.6) {
+          diagnosis.addEntry.push(et2);
+        }
+      }
+
+      // Parameter adjustments from live results
+      var lev = this.params.leverage || 200;
+      if (lossCount > 0 && totalLossPnlAbs / lossCount > this.params.stopLoss * lev * 0.8) {
+        diagnosis.adjustParams.stopLoss = Math.max(0.001, +(this.params.stopLoss * 0.8).toFixed(4));
+      }
+      if (winCount > 0 && totalWinPnlAbs / winCount > this.params.takeProfit * lev * 1.2) {
+        diagnosis.adjustParams.takeProfit = Math.min(0.05, +(this.params.takeProfit * 1.2).toFixed(4));
+      }
+
+      return diagnosis;
+    },
+
     // ---- Clone with deep copy ----
     _clone: function() {
       return createStrategy(
@@ -563,7 +665,7 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
       var ruleIdCounter = 100;
 
       // --- Parameter mutation (always) ---
-      var paramKeys = ['jawPeriod','teethPeriod','lipsPeriod','aoFast','aoSlow','leverage','stopLoss','takeProfit','trailStop','minSpread','minVolumeRatio'];
+      var paramKeys = ['jawPeriod','teethPeriod','lipsPeriod','aoFast','aoSlow','leverage','stopLoss','takeProfit','trailStop','minSpread','minVolumeRatio','minSignalScore'];
       for (var pk = 0; pk < paramKeys.length; pk++) {
         var key = paramKeys[pk];
         if (Math.random() < 0.35) {
@@ -581,6 +683,7 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
           if (key === 'stopLoss') newVal = Math.max(0.001, Math.min(0.03, newVal));
           if (key === 'takeProfit') newVal = Math.max(0.003, Math.min(0.06, newVal));
           if (key === 'leverage') newVal = Math.round(Math.max(10, Math.min(200, newVal)));
+          if (key === 'minSignalScore') newVal = Math.max(0.3, Math.min(5.0, +newVal.toFixed(2)));
           mutant.params[key] = +newVal.toFixed(4);
         }
       }
@@ -637,6 +740,15 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
               mutant.filterRules.push({ id: 'f' + (++ruleIdCounter), type: ft, params: {}, weight: 0.7, enabled: true });
             }
           }
+        }
+      }
+
+      // --- Bootstrap: if zero-trade strategy, force trade-enabling mutations ---
+      if (diagnosis && diagnosis._bootstrap) {
+        mutant.params.minSignalScore = Math.max(0.3, +(mutant.params.minSignalScore * 0.7).toFixed(2));
+        var enabledFilters = mutant.filterRules.filter(function(r) { return r.enabled; });
+        if (enabledFilters.length >= 2) {
+          enabledFilters[enabledFilters.length - 1].enabled = false;
         }
       }
 
@@ -715,6 +827,7 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
       var popSize = typeof config === 'number' ? 20 : (config.populationSize || 20);
       var generations = typeof config === 'number' ? config : (config.generations || 5);
       var onProgress = config.onProgress || null;
+      var liveFeedback = config.liveFeedback || [];
       var self = this;
 
       // Create initial population from this strategy
@@ -736,8 +849,10 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
 
         // Sort by totalReturn (could use Sharpe-like: return * winRate/100)
         scored.sort(function(a, b) {
-          var scoreA = a.result.totalReturn * (a.result.winRate / 100);
-          var scoreB = b.result.totalReturn * (b.result.winRate / 100);
+          var tradePenaltyA = a.result.closedTrades < 5 ? -50 : 0;
+          var tradePenaltyB = b.result.closedTrades < 5 ? -50 : 0;
+          var scoreA = a.result.totalReturn * (a.result.winRate / 100) + tradePenaltyA;
+          var scoreB = b.result.totalReturn * (b.result.winRate / 100) + tradePenaltyB;
           return scoreB - scoreA;
         });
 
@@ -772,7 +887,7 @@ function createStrategy(name, version, desc, params, entryRules, exitRules, filt
         // Self-diagnosis on the best performer (skip on very large datasets)
         var diagnosis = null;
         if (scored[0].result.trades.length <= 3000) {
-          diagnosis = scored[0].strategy._diagnose(candles, scored[0].result);
+          diagnosis = scored[0].strategy._diagnose(candles, scored[0].result, liveFeedback);
         }
 
         // Selection: top 5 survive (elitism)

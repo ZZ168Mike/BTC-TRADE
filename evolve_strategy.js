@@ -84,6 +84,19 @@ const t0 = Date.now();
 const baseBT = currentStrategy.backtest(deduped);
 console.log('  Return: +' + baseBT.totalReturn + '%  Win: ' + baseBT.winRate + '%  Trades: ' + baseBT.closedTrades + '  (' + (Date.now() - t0) + 'ms)');
 
+// Load live trade feedback from paper_state.json (if exists)
+let liveFeedback = [];
+try {
+  const PAPER_STATE = path.join(__dirname, 'paper_state.json');
+  if (fs.existsSync(PAPER_STATE)) {
+    const paperState = JSON.parse(fs.readFileSync(PAPER_STATE, 'utf8'));
+    if (paperState.recentTradeFeedback && paperState.recentTradeFeedback.length > 0) {
+      liveFeedback = paperState.recentTradeFeedback.slice(-50);
+      console.log('  Live trade feedback: ' + liveFeedback.length + ' trades');
+    }
+  }
+} catch(e) { /* ignore */ }
+
 // ── Deep iteration ──
 console.log('');
 console.log('Running genetic iteration (pop ' + actualPop + ', ' + actualGens + ' gens)...');
@@ -93,6 +106,7 @@ const iterT0 = Date.now();
 const iterResult = currentStrategy.iterate(deduped, {
   populationSize: actualPop,
   generations: actualGens,
+  liveFeedback: liveFeedback,
   onProgress: function(p) {
     const elapsed = ((Date.now() - iterT0) / 1000).toFixed(0);
     const bar = '█'.repeat(Math.round(p.pct / 5)) + '░'.repeat(20 - Math.round(p.pct / 5));

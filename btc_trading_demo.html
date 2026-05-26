@@ -989,10 +989,26 @@ function executePaperTrade(signal,candle,candleIdx){
   var amount=paperAccount.balance*currentStrategy.params.positionSize;
   var qty=amount/candle.close;
   if(qty*candle.close<10)return; // min order $10
+  // Identify which entry rule produced this signal
+  var ctx=currentStrategy._buildContext(candles15m);
+  var entryRuleType='unknown',entryBestScore=0;
+  for(var er=0;er<currentStrategy.entryRules.length;er++){
+    var rule=currentStrategy.entryRules[er];
+    if(!rule.enabled||rule.weight<=0)continue;
+    if(RuleEvaluators&&RuleEvaluators[rule.type]){
+      var s=RuleEvaluators[rule.type](candles15m,candleIdx,rule,ctx);
+      if(s&&s.type==='BUY'){var sc=s.strength*rule.weight;if(sc>entryBestScore){entryBestScore=sc;entryRuleType=rule.type;}}
+    }
+  }
+  var entryReg=detectMarketRegime(candles15m);
   paperAccount.position={
     side:'BUY',qty:qty,entryPrice:candle.close,
     entryTime:candle.time,entryCandleIdx:candleIdx,_trailHi:candle.high,
-    exitRules:JSON.parse(JSON.stringify(currentStrategy.exitRules))
+    exitRules:JSON.parse(JSON.stringify(currentStrategy.exitRules)),
+    _entryRuleType:entryRuleType,
+    _entryRegime:entryReg.r,
+    _entryVolatility:entryReg.v,
+    _entryAO:ctx.ao&&!isNaN(ctx.ao[candleIdx])?ctx.ao[candleIdx]:0
   };
   paperAccount.balance-=amount;
   var oid=++paperAccount.orderIdSeq;
@@ -1047,8 +1063,13 @@ function closePaperPosition(candle,candleIdx,reason){
   });
   if(paperAccount.closedTrades.length>200)paperAccount.closedTrades.shift();
   if(pnl>0)paperAccount.winningTrades++;else paperAccount.losingTrades++;
-  // Record for evolution feedback
-  recordLiveTrade(pnl,pnlPct,reason);
+  // Record for evolution feedback (pass position info for learning)
+  recordLiveTrade(pnl,pnlPct,reason,{
+    entryRuleType:pos._entryRuleType,
+    entryIdx:pos.entryCandleIdx,
+    regime:pos._entryRegime,
+    ao:pos._entryAO
+  });
   paperAccount.position=null;
   savePaperAccount();renderLiveOrders();renderClosedTrades();
   addLog('[Paper] SELL @'+candle.close.toFixed(0)+' P&L:'+(pnl>=0?'+':'')+'$'+pnl.toFixed(2)+' ('+pnlPct+'%) '+reason);
@@ -1212,9 +1233,15 @@ function startEvolution(){
 function stopEvolution(){
   if(evolutionState.reviewTimer){clearInterval(evolutionState.reviewTimer);evolutionState.reviewTimer=null}
 }
-function recordLiveTrade(pnl,pnlPct,reason){
+function recordLiveTrade(pnl,pnlPct,reason,posInfo){
   if(!evolutionState._recentTrades)evolutionState._recentTrades=[];
-  evolutionState._recentTrades.push({pnl:pnl,pnlPct:pnlPct,reason:reason,time:Date.now()});
+  evolutionState._recentTrades.push({
+    pnl:pnl,pnlPct:pnlPct,reason:reason,time:Date.now(),
+    entryType:posInfo?posInfo.entryRuleType:'unknown',
+    entryIdx:posInfo?posInfo.entryIdx:-1,
+    entryRegime:posInfo?posInfo.regime:'unknown',
+    entryAO:posInfo?posInfo.ao:0
+  });
   if(evolutionState._recentTrades.length>50)evolutionState._recentTrades.shift();
 }
 function evaluateLivePerformance(){

@@ -53,6 +53,7 @@ function loadState() {
     lastMarketRegime: 'neutral',
     lastVolatility: 0,
     recentTrades: [],
+    recentTradeFeedback: [],
     // Metadata
     lastRun: null,
     runCount: 0
@@ -74,6 +75,7 @@ function saveState(state) {
   if (state.closedTrades.length > 200) state.closedTrades = state.closedTrades.slice(-200);
   if (state.equityHistory.length > 500) state.equityHistory = state.equityHistory.slice(-500);
   if (state.recentTrades.length > 50) state.recentTrades = state.recentTrades.slice(-50);
+  if (state.recentTradeFeedback && state.recentTradeFeedback.length > 100) state.recentTradeFeedback = state.recentTradeFeedback.slice(-100);
   if (state.strategyHistory.length > 20) state.strategyHistory = state.strategyHistory.slice(-20);
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
@@ -172,6 +174,9 @@ async function main() {
   const candlesToProcess = recentCandles.slice(0, -1); // Exclude current incomplete candle
   let newTrades = 0;
 
+  // Detect market regime once for trade feedback
+  const regime = detectMarketRegime(recentCandles);
+
   for (let i = Math.max(30, candlesToProcess.length - 20); i < candlesToProcess.length; i++) {
     const candle = candlesToProcess[i];
     // Skip if already processed (check if we have equity history for this time)
@@ -205,8 +210,10 @@ async function main() {
           // Liquidation check: loss cannot exceed margin
           if (pnl < -margin) pnl = -margin;
           state.balance += margin + pnl;
-          const pnlPct = margin > 0 ? (pnl / margin * 100).toFixed(1) : '0';
+          const pnlPctNum = margin > 0 ? (pnl / margin * 100) : 0;
+          const pnlPct = pnlPctNum.toFixed(1);
           const lev = state.position.leverage || 1;
+          const closedBarsHeld = i - (state.position._entryIdx || 0);
           state.orders.push({
             id: ++state.orderIdSeq, time: formatTime(candle.time), side: 'Sell',
             price: '$' + candle.close.toFixed(1), qty: state.position.qty.toFixed(6) + ' BTC',
@@ -217,19 +224,58 @@ async function main() {
             side: 'Long', entryPrice: state.position.entryPrice, exitPrice: candle.close,
             qty: state.position.qty, margin: Math.round(margin * 100) / 100,
             pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPct + '%', leverage: lev + 'x',
-            reason: exitReason, barsHeld: i - (state.position._entryIdx || 0)
+            reason: exitReason, barsHeld: closedBarsHeld
           });
           if (pnl > 0) state.winningTrades++; else state.losingTrades++;
           state.recentTrades.push({ pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPct + '%', reason: exitReason, time: Date.now() });
           if (state.recentTrades.length > 50) state.recentTrades.shift();
+
+          // Save enriched trade feedback for strategy learning
+          const posRef = state.position;
+          if (!state.recentTradeFeedback) state.recentTradeFeedback = [];
+          state.recentTradeFeedback.push({
+            entryType: posRef._entryRuleType || 'unknown',
+            entryIdx: posRef._entryIdx,
+            pnl: Math.round(pnl * 100) / 100,
+            pnlPct: parseFloat(pnlPct),
+            reason: exitReason,
+            entryRegime: posRef._entryRegime || 'unknown',
+            entryVolatility: posRef._entryVolatility || 0,
+            entryAO: posRef._entryAO || 0,
+            entryTime: posRef.entryTime,
+            exitTime: candle.time,
+            barsHeld: closedBarsHeld
+          });
+          if (state.recentTradeFeedback.length > 100) state.recentTradeFeedback = state.recentTradeFeedback.slice(-100);
+
           state.position = null;
           newTrades++;
           log('SELL @' + candle.close.toFixed(0) + ' P&L:$' + pnl.toFixed(2) + ' ' + exitReason);
         }
       } else {
         // Check entry signal
-        const signal = strategy.generateSignal(candlesToProcess, i);
+        const ctx = strategy._buildContext ? strategy._buildContext(candlesToProcess) : null;
+        const signal = strategy.generateSignal(candlesToProcess, i, ctx);
         if (signal && signal.type === 'BUY') {
+          // Identify which entry rule produced this signal
+          let entryRuleType = 'unknown', entryBestScore = 0;
+          if (ctx && strategy.entryRules) {
+            for (let er = 0; er < strategy.entryRules.length; er++) {
+              const rule = strategy.entryRules[er];
+              if (!rule.enabled || rule.weight <= 0) continue;
+              if (RuleEvaluators && RuleEvaluators[rule.type]) {
+                const s = RuleEvaluators[rule.type](candlesToProcess, i, rule, ctx);
+                if (s && s.type === 'BUY') {
+                  const score = s.strength * rule.weight;
+                  if (score > entryBestScore) { entryBestScore = score; entryRuleType = rule.type; }
+                }
+              }
+            }
+          }
+          const entryRegime = regime.r;
+          const entryVol = regime.v;
+          const entryAO = ctx && ctx.ao ? ctx.ao[i] : 0;
+
           const lev = strategy.params.leverage || 1;
           const margin = state.balance * strategy.params.positionSize;
           const qty = (margin * lev) / candle.close;
@@ -238,7 +284,11 @@ async function main() {
               side: 'BUY', qty: qty, entryPrice: candle.close,
               entryTime: candle.time, _entryIdx: i, _trailHi: candle.high,
               margin: margin, leverage: lev,
-              _exitRules: JSON.parse(JSON.stringify(strategy.exitRules))
+              _exitRules: JSON.parse(JSON.stringify(strategy.exitRules)),
+              _entryRuleType: entryRuleType,
+              _entryRegime: entryRegime,
+              _entryVolatility: entryVol,
+              _entryAO: isNaN(entryAO) ? 0 : entryAO
             };
             state.balance -= margin;
             state.orders.push({
@@ -249,7 +299,7 @@ async function main() {
             });
             state.totalTrades++;
             newTrades++;
-            log('BUY @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x ' + signal.reason);
+            log('BUY @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x [' + entryRuleType + '] ' + signal.reason);
           }
         }
       }
@@ -261,13 +311,16 @@ async function main() {
   if (newTrades > 0) log('New trades this run: ' + newTrades);
 
   // ── Evolution check ──
-  const regime = detectMarketRegime(recentCandles);
   const regimeChanged = regime.r !== state.lastMarketRegime;
   state.lastMarketRegime = regime.r;
   state.lastVolatility = regime.v;
 
-  // Run evolution if: regime changed, or every ~2 hours (8 runs)
-  const shouldEvolve = regimeChanged || (state.runCount % 8 === 0);
+  // Run evolution if: regime changed, every ~2 hours (8 runs), or 3+ new closed trades
+  const recentFeedback = state.recentTradeFeedback || [];
+  const newClosedSinceLast = state._lastEvolvedTradeTime
+    ? recentFeedback.filter(t => new Date(t.exitTime).getTime() > state._lastEvolvedTradeTime).length
+    : 0;
+  const shouldEvolve = regimeChanged || (state.runCount % 8 === 0) || newClosedSinceLast >= 3;
   if (shouldEvolve && recentCandles.length >= 50) {
     log('Running evolution (' + regime.r + ' vol:' + (regime.v * 100).toFixed(2) + '%)...');
     try {
@@ -288,7 +341,12 @@ async function main() {
 
       const popSize = allCandles.length > 50000 ? 4 : 10;
       const gens = allCandles.length > 50000 ? 10 : 20;
-      const iterResult = strategy.iterate(allCandles, { populationSize: popSize, generations: gens });
+      const tradeFeedback = (state.recentTradeFeedback || []).slice(-20);
+      const iterResult = strategy.iterate(allCandles, {
+        populationSize: popSize,
+        generations: gens,
+        liveFeedback: tradeFeedback
+      });
       if (iterResult && iterResult.bestStrategy) {
         const best = iterResult.bestStrategy;
         const currentBT = strategy.backtest(allCandles);
@@ -325,6 +383,35 @@ async function main() {
         }
       }
     } catch(e) { log('Evolution error: ' + e.message); }
+    state._lastEvolvedTradeTime = Date.now();
+  }
+
+  // ── Bootstrap: force strategy to trade if no trades after many runs ──
+  const TRADE_BOOTSTRAP_RUNS = 6;
+  if (state.closedTrades.length === 0 && state.runCount >= TRADE_BOOTSTRAP_RUNS && state.runCount % 3 === 0) {
+    log('Bootstrap: zero trades after ' + state.runCount + ' runs — forcing lower thresholds');
+    const currentMinScore = strategy.params.minSignalScore;
+    if (currentMinScore > 0.5) {
+      strategy.params.minSignalScore = Math.max(0.3, +(currentMinScore * 0.7).toFixed(2));
+      log('  minSignalScore: ' + currentMinScore + ' -> ' + strategy.params.minSignalScore.toFixed(2));
+    }
+    const sleepingFilter = strategy.filterRules.find(r => r.type === 'alligator_sleeping' && r.enabled);
+    if (sleepingFilter && strategy.filterRules.filter(r => r.enabled).length >= 3) {
+      sleepingFilter.enabled = false;
+      log('  Disabled alligator_sleeping filter');
+    }
+    strategy.name = 'Bootstrap-' + new Date().toISOString().slice(0, 10);
+    strategy.description = 'Bootstrap-adapted (' + state.runCount + ' runs, 0 trades)';
+    strategy.generation = (strategy.generation || 0) + 1;
+    const bootOutput = {
+      name: strategy.name, version: strategy.version, description: strategy.description,
+      generation: strategy.generation, parentInfo: 'bootstrap',
+      params: strategy.params, entryRules: strategy.entryRules,
+      exitRules: strategy.exitRules, filterRules: strategy.filterRules,
+      bootstrapped: true, evolvedAt: new Date().toISOString()
+    };
+    fs.writeFileSync(STRATEGY_FILE, JSON.stringify(bootOutput, null, 2));
+    log('Bootstrap strategy saved');
   }
 
   // Save state
