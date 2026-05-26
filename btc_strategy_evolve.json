@@ -1,9 +1,9 @@
 {
-  "name": "BTC-200x-Aggro",
+  "name": "BTC-200x-Chaos",
   "version": "1.0",
-  "description": "200x leverage — 2.5:1 R:R (200% gain / 80% loss) — 15m candles — self-evolving genetic algorithm",
+  "description": "Chaos theory strategy — Alligator + AO + Fractals — 200x, 80% SL / 200% TP — real P&L driven evolution",
   "generation": 0,
-  "parentInfo": "Chaos v2.0 aggressive fork",
+  "parentInfo": "Chaos v2.0 original",
   "params": {
     "jawPeriod": 13,
     "teethPeriod": 8,
@@ -11,16 +11,16 @@
     "aoFast": 5,
     "aoSlow": 34,
     "leverage": 200,
-    "positionSize": 1.0,
-    "stopLoss": 0.0050,
-    "takeProfit": 0.0050,
+    "positionSize": 0.2,
+    "stopLoss": 0.0040,
+    "takeProfit": 0.0100,
     "trailStop": 0.02,
     "maxBars": 50,
-    "minSpread": 0.0005,
+    "minSpread": 0.0003,
     "minVolumeRatio": 0.3,
     "rsiMax": 85,
     "rsiMin": 15,
-    "minSignalScore": 1.0
+    "minSignalScore": 0.6
   },
   "entryRules": [
     { "id": "e1", "type": "fractal_breakout", "params": { "lookback": 2 }, "weight": 1.0, "enabled": true },
@@ -39,10 +39,10 @@
   ],
   "filterRules": [
     { "id": "f1", "type": "ao_direction", "params": {}, "weight": 1.0, "enabled": true },
-    { "id": "f2", "type": "alligator_sleeping", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "f2", "type": "alligator_sleeping", "params": {}, "weight": 0.5, "enabled": false },
     { "id": "f3", "type": "trend_align", "params": {}, "weight": 0.5, "enabled": false },
     { "id": "f4", "type": "volume_ok", "params": {}, "weight": 0.3, "enabled": false },
     { "id": "f5", "type": "rsi_ok", "params": {}, "weight": 0.4, "enabled": false }
   ],
-  "savedAt": "2026-05-25T00:00:00"
+  "savedAt": "2026-05-27T00:00:00"
 }

@@ -255,20 +255,54 @@ async function main() {
       } else {
         // Check entry signal
         const ctx = strategy._buildContext ? strategy._buildContext(candlesToProcess) : null;
+        if (!ctx) { log('  WARN: no ctx for signal check'); continue; }
+
+        // --- Signal diagnostics: log what each entry rule produces ---
+        let diagFired = [], diagBlocked = [], entryBestScore = 0;
+        for (let er = 0; er < strategy.entryRules.length; er++) {
+          const rule = strategy.entryRules[er];
+          if (!rule.enabled || rule.weight <= 0) { diagBlocked.push(rule.type + '(disabled/w=0)'); continue; }
+          if (!RuleEvaluators || !RuleEvaluators[rule.type]) { diagBlocked.push(rule.type + '(no-eval)'); continue; }
+          const sig = RuleEvaluators[rule.type](candlesToProcess, i, rule, ctx);
+          if (!sig) { diagBlocked.push(rule.type + '(no-signal)'); continue; }
+          // Check filters
+          let blockedBy = null;
+          for (let f = 0; f < strategy.filterRules.length; f++) {
+            const fr = strategy.filterRules[f];
+            if (!fr.enabled || fr.weight <= 0) continue;
+            if (RuleEvaluators[fr.type] && !RuleEvaluators[fr.type](candlesToProcess, i, sig, ctx)) {
+              blockedBy = fr.type; break;
+            }
+          }
+          if (blockedBy) { diagBlocked.push(rule.type + '→' + sig.type + '(s' + sig.strength + ' blocked:' + blockedBy + ')'); }
+          else {
+            const score = sig.strength * rule.weight;
+            diagFired.push(rule.type + '→' + sig.type + '(s' + sig.strength + '×w' + rule.weight + '=' + score.toFixed(1) + ')');
+            if (score > entryBestScore) { entryBestScore = score; }
+          }
+        }
+        // Log diagnostics once per run (on last candle processed)
+        if (i === candlesToProcess.length - 1) {
+          const minScore = strategy.params.minSignalScore || 0;
+          if (diagFired.length === 0) {
+            log('  SIGNAL: NONE | minScore=' + minScore.toFixed(1) + ' | entry: ' + diagBlocked.join(', '));
+          } else if (entryBestScore < minScore) {
+            log('  SIGNAL: best=' + entryBestScore.toFixed(1) + ' < min=' + minScore.toFixed(1) + ' | fired: ' + diagFired.join(', '));
+          }
+        }
+
         const signal = strategy.generateSignal(candlesToProcess, i, ctx);
         if (signal && signal.type === 'BUY') {
           // Identify which entry rule produced this signal
-          let entryRuleType = 'unknown', entryBestScore = 0;
-          if (ctx && strategy.entryRules) {
-            for (let er = 0; er < strategy.entryRules.length; er++) {
-              const rule = strategy.entryRules[er];
-              if (!rule.enabled || rule.weight <= 0) continue;
-              if (RuleEvaluators && RuleEvaluators[rule.type]) {
-                const s = RuleEvaluators[rule.type](candlesToProcess, i, rule, ctx);
-                if (s && s.type === 'BUY') {
-                  const score = s.strength * rule.weight;
-                  if (score > entryBestScore) { entryBestScore = score; entryRuleType = rule.type; }
-                }
+          let entryRuleType = 'unknown';
+          for (let er = 0; er < strategy.entryRules.length; er++) {
+            const rule = strategy.entryRules[er];
+            if (!rule.enabled || rule.weight <= 0) continue;
+            if (RuleEvaluators && RuleEvaluators[rule.type]) {
+              const s = RuleEvaluators[rule.type](candlesToProcess, i, rule, ctx);
+              if (s && s.type === 'BUY') {
+                const score = s.strength * rule.weight;
+                if (score > (entryBestScore > 0 ? entryBestScore - 0.1 : 0)) { entryRuleType = rule.type; }
               }
             }
           }
@@ -311,107 +345,192 @@ async function main() {
   if (newTrades > 0) log('New trades this run: ' + newTrades);
 
   // ── Evolution check ──
+  // Strategy evolves from REAL trade P&L, not backtesting
+  // Win → keep strategy. Loss → analyze & iterate.
   const regimeChanged = regime.r !== state.lastMarketRegime;
   state.lastMarketRegime = regime.r;
   state.lastVolatility = regime.v;
 
-  // Run evolution if: regime changed, every ~2 hours (8 runs), or 3+ new closed trades
-  const recentFeedback = state.recentTradeFeedback || [];
+  const recentFeedback = (state.recentTradeFeedback || []).slice(-50);
   const newClosedSinceLast = state._lastEvolvedTradeTime
     ? recentFeedback.filter(t => new Date(t.exitTime).getTime() > state._lastEvolvedTradeTime).length
-    : 0;
+    : recentFeedback.length;
+
+  // Check recent trade results for P&L-driven evolution
+  const recentLosses = recentFeedback.filter(t => t.pnl < 0);
+  const recentWins = recentFeedback.filter(t => t.pnl > 0);
+  const hasRecentTrades = recentFeedback.length > 0;
+
+  // Trigger evolution from: new closed trades, regime change, or periodic
   const shouldEvolve = regimeChanged || (state.runCount % 8 === 0) || newClosedSinceLast >= 3;
+
   if (shouldEvolve && recentCandles.length >= 50) {
-    log('Running evolution (' + regime.r + ' vol:' + (regime.v * 100).toFixed(2) + '%)...');
-    try {
-      // Load history for larger backtest
-      let allCandles = recentCandles;
-      try {
-        if (fs.existsSync(HISTORY_FILE)) {
-          const hist = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
-          // Merge: use history + append recent candles
-          const existingTimes = new Set(hist.map(c => c.time));
-          for (const c of recentCandles) {
-            if (!existingTimes.has(c.time)) hist.push(c);
+    const tradeDrivenEvo = hasRecentTrades && recentFeedback.length >= 2;
+
+    if (tradeDrivenEvo) {
+      // ── P&L-DRIVEN EVOLUTION: learn from actual trade results ──
+      log('P&L-driven evolution: ' + recentWins.length + ' wins, ' + recentLosses.length + ' losses');
+      const totalLoss = recentLosses.reduce((s, t) => s + Math.abs(t.pnl || 0), 0);
+      const totalWin = recentWins.reduce((s, t) => s + Math.abs(t.pnl || 0), 0);
+      const netPnl = totalWin - totalLoss;
+
+      if (netPnl > 0 && recentLosses.length === 0) {
+        // All wins — strategy is working, keep it
+        log('  All trades profitable — keeping strategy');
+      } else if (recentLosses.length > 0) {
+        // Has losses — analyze and iterate
+        log('  Losses detected — analyzing & iterating...');
+
+        // Load history for diagnosis context
+        let allCandles = recentCandles;
+        try {
+          if (fs.existsSync(HISTORY_FILE)) {
+            const hist = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+            const existingTimes = new Set(hist.map(c => c.time));
+            for (const c of recentCandles) {
+              if (!existingTimes.has(c.time)) hist.push(c);
+            }
+            hist.sort((a, b) => a.time - b.time);
+            allCandles = hist;
           }
-          hist.sort((a, b) => a.time - b.time);
-          allCandles = hist;
-        }
-      } catch(e) { /* use recent only */ }
+        } catch(e) { /* use recent only */ }
 
-      const popSize = allCandles.length > 50000 ? 4 : 10;
-      const gens = allCandles.length > 50000 ? 10 : 20;
-      const tradeFeedback = (state.recentTradeFeedback || []).slice(-20);
-      const iterResult = strategy.iterate(allCandles, {
-        populationSize: popSize,
-        generations: gens,
-        liveFeedback: tradeFeedback
-      });
-      if (iterResult && iterResult.bestStrategy) {
-        const best = iterResult.bestStrategy;
-        const currentBT = strategy.backtest(allCandles);
-        const bestResult = iterResult.bestResult || best.backtest(allCandles);
-        log('Current: +' + currentBT.totalReturn + '% | Evolved: +' + bestResult.totalReturn + '%');
+        // Run deep diagnosis from live losses
+        const diagnosis = strategy._diagnose
+          ? strategy._diagnose(allCandles, strategy.backtest(allCandles), recentLosses)
+          : null;
 
-        if (bestResult.totalReturn > currentBT.totalReturn) {
-          // Save evolved strategy
-          best.name = 'Evo-' + new Date().toISOString().slice(0, 10);
-          best.version = (parseFloat(strategy.version || '2.0') + 0.1).toFixed(1);
-          const output = {
-            name: best.name,
-            version: best.version,
-            description: 'Auto-evolved on ' + new Date().toISOString().slice(0, 10) + ' | ' + allCandles.length.toLocaleString() + ' candles',
-            generation: (strategy.generation || 0) + 1,
-            parentInfo: strategy.name + ' v' + strategy.version,
-            params: best.params,
-            entryRules: best.entryRules,
-            exitRules: best.exitRules,
-            filterRules: best.filterRules,
-            backtest: { totalReturn: bestResult.totalReturn, winRate: bestResult.winRate, closedTrades: bestResult.closedTrades },
-            evolvedAt: new Date().toISOString()
-          };
-          fs.writeFileSync(STRATEGY_FILE, JSON.stringify(output, null, 2));
-          log('Deployed: ' + best.name + ' v' + best.version + ' (+' + (bestResult.totalReturn - currentBT.totalReturn).toFixed(2) + '%)');
-          // Record in history
-          state.strategyHistory.push({
-            name: best.name, version: best.version,
-            deployedAt: Date.now(),
-            backtestReturn: bestResult.totalReturn
-          });
-        } else {
-          log('Current strategy is optimal');
+        // Apply diagnosis to mutate strategy
+        let mutant = strategy._clone ? strategy._clone() : null;
+        if (mutant && diagnosis) {
+          mutant = mutant._mutate ? mutant._mutate(diagnosis) : mutant;
+
+          // Validate mutant still generates trades
+          const mutantBT = mutant.backtest(allCandles);
+          if (mutantBT.closedTrades > 0) {
+            mutant.name = 'Evo-' + new Date().toISOString().slice(0, 10);
+            mutant.version = (parseFloat(strategy.version || '1.0') + 0.1).toFixed(1);
+            mutant.description = 'P&L-evolved: ' + recentLosses.length + ' losses analyzed';
+            const output = {
+              name: mutant.name, version: mutant.version, description: mutant.description,
+              generation: (strategy.generation || 0) + 1,
+              parentInfo: strategy.name + ' v' + strategy.version,
+              params: mutant.params, entryRules: mutant.entryRules,
+              exitRules: mutant.exitRules, filterRules: mutant.filterRules,
+              backtest: { totalReturn: mutantBT.totalReturn, winRate: mutantBT.winRate, closedTrades: mutantBT.closedTrades },
+              evolvedAt: new Date().toISOString(),
+              evolutionReason: 'real-pnl-loss'
+            };
+            fs.writeFileSync(STRATEGY_FILE, JSON.stringify(output, null, 2));
+            log('  Deployed: ' + mutant.name + ' v' + mutant.version + ' (loss-driven evolution)');
+            state.strategyHistory.push({
+              name: mutant.name, version: mutant.version,
+              deployedAt: Date.now(),
+              reason: 'losses-' + recentLosses.length
+            });
+          } else {
+            log('  Mutant has 0 trades — keeping current strategy');
+          }
         }
       }
-    } catch(e) { log('Evolution error: ' + e.message); }
+    } else if (state.closedTrades.length === 0) {
+      // ── BACKTEST EVOLUTION (fallback when no live trades yet) ──
+      log('Backtest evolution (no live trades yet)...');
+      try {
+        let allCandles = recentCandles;
+        try {
+          if (fs.existsSync(HISTORY_FILE)) {
+            const hist = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+            const existingTimes = new Set(hist.map(c => c.time));
+            for (const c of recentCandles) {
+              if (!existingTimes.has(c.time)) hist.push(c);
+            }
+            hist.sort((a, b) => a.time - b.time);
+            allCandles = hist;
+          }
+        } catch(e) { /* use recent only */ }
+
+        const currentBT = strategy.backtest(allCandles);
+        log('  Current backtest: +' + currentBT.totalReturn + '% win ' + currentBT.winRate + '% trades ' + currentBT.closedTrades);
+
+        // Only evolve if backtest shows 0 trades (strategy is broken)
+        if (currentBT.closedTrades === 0) {
+          log('  Backtest shows 0 trades — strategy cannot generate signals, mutating...');
+          // Force mutation with bootstrap diagnosis
+          const forceDiag = { addFilters: [], addEntry: ['ao_zero_cross', 'lips_cross', 'ma_cross'], adjustParams: { minSignalScore: 0.3 }, _bootstrap: true };
+          let mutant = strategy._clone()._mutate(forceDiag);
+          const mutantBT = mutant.backtest(allCandles);
+          log('  Mutant backtest: +' + mutantBT.totalReturn + '% trades ' + mutantBT.closedTrades);
+          if (mutantBT.closedTrades > 0) {
+            mutant.name = 'Evo-' + new Date().toISOString().slice(0, 10);
+            mutant.version = (parseFloat(strategy.version || '1.0') + 0.1).toFixed(1);
+            mutant.description = 'Force-evolved — backtest was 0-trade';
+            const output = {
+              name: mutant.name, version: mutant.version, description: mutant.description,
+              generation: (strategy.generation || 0) + 1, parentInfo: strategy.name + ' v' + strategy.version,
+              params: mutant.params, entryRules: mutant.entryRules,
+              exitRules: mutant.exitRules, filterRules: mutant.filterRules,
+              backtest: { totalReturn: mutantBT.totalReturn, winRate: mutantBT.winRate, closedTrades: mutantBT.closedTrades },
+              evolvedAt: new Date().toISOString(), evolutionReason: 'zero-trade-fix'
+            };
+            fs.writeFileSync(STRATEGY_FILE, JSON.stringify(output, null, 2));
+            log('  Deployed force-evolved strategy (' + mutantBT.closedTrades + ' trades)');
+          }
+        }
+      } catch(e) { log('Backtest evolution error: ' + e.message); }
+    }
     state._lastEvolvedTradeTime = Date.now();
   }
 
-  // ── Bootstrap: force strategy to trade if no trades after many runs ──
-  const TRADE_BOOTSTRAP_RUNS = 6;
-  if (state.closedTrades.length === 0 && state.runCount >= TRADE_BOOTSTRAP_RUNS && state.runCount % 3 === 0) {
+  // ── Bootstrap: force strategy to trade if no trades after threshold runs ──
+  // Fires every run after threshold until first trade happens
+  const TRADE_BOOTSTRAP_RUNS = 4;
+  if (state.closedTrades.length === 0 && !state.position && state.runCount >= TRADE_BOOTSTRAP_RUNS) {
     log('Bootstrap: zero trades after ' + state.runCount + ' runs — forcing lower thresholds');
+    let changed = false;
+
+    // Aggressively lower minSignalScore
     const currentMinScore = strategy.params.minSignalScore;
-    if (currentMinScore > 0.5) {
-      strategy.params.minSignalScore = Math.max(0.3, +(currentMinScore * 0.7).toFixed(2));
+    if (currentMinScore > 0.3) {
+      strategy.params.minSignalScore = Math.max(0.3, +(currentMinScore * 0.6).toFixed(2));
       log('  minSignalScore: ' + currentMinScore + ' -> ' + strategy.params.minSignalScore.toFixed(2));
+      changed = true;
     }
+
+    // Disable alligator_sleeping
     const sleepingFilter = strategy.filterRules.find(r => r.type === 'alligator_sleeping' && r.enabled);
-    if (sleepingFilter && strategy.filterRules.filter(r => r.enabled).length >= 3) {
+    if (sleepingFilter) {
       sleepingFilter.enabled = false;
       log('  Disabled alligator_sleeping filter');
+      changed = true;
     }
-    strategy.name = 'Bootstrap-' + new Date().toISOString().slice(0, 10);
-    strategy.description = 'Bootstrap-adapted (' + state.runCount + ' runs, 0 trades)';
-    strategy.generation = (strategy.generation || 0) + 1;
-    const bootOutput = {
-      name: strategy.name, version: strategy.version, description: strategy.description,
-      generation: strategy.generation, parentInfo: 'bootstrap',
-      params: strategy.params, entryRules: strategy.entryRules,
-      exitRules: strategy.exitRules, filterRules: strategy.filterRules,
-      bootstrapped: true, evolvedAt: new Date().toISOString()
-    };
-    fs.writeFileSync(STRATEGY_FILE, JSON.stringify(bootOutput, null, 2));
-    log('Bootstrap strategy saved');
+
+    // Disable ao_direction if it's the last filter standing and we STILL have 0 trades
+    if (state.runCount >= TRADE_BOOTSTRAP_RUNS + 3) {
+      const aoFilter = strategy.filterRules.find(r => r.type === 'ao_direction' && r.enabled);
+      if (aoFilter) {
+        aoFilter.enabled = false;
+        log('  Disabled ao_direction filter (extended bootstrap)');
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      strategy.name = 'Bootstrap-' + new Date().toISOString().slice(0, 10);
+      strategy.description = 'Bootstrap-adapted (' + state.runCount + ' runs, 0 trades)';
+      strategy.generation = (strategy.generation || 0) + 1;
+      const bootOutput = {
+        name: strategy.name, version: strategy.version, description: strategy.description,
+        generation: strategy.generation, parentInfo: 'bootstrap',
+        params: strategy.params, entryRules: strategy.entryRules,
+        exitRules: strategy.exitRules, filterRules: strategy.filterRules,
+        bootstrapped: true, evolvedAt: new Date().toISOString()
+      };
+      fs.writeFileSync(STRATEGY_FILE, JSON.stringify(bootOutput, null, 2));
+      log('Bootstrap strategy saved');
+    } else {
+      log('Bootstrap: no changes needed (already relaxed)');
+    }
   }
 
   // Save state
