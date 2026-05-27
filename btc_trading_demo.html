@@ -1096,7 +1096,12 @@ function paperTradingTick(){
 
 function updatePaperEquity(candle){
   var eq=paperAccount.balance;
-  if(paperAccount.position)eq+=paperAccount.position.qty*candle.close;
+  if(paperAccount.position){
+    var pos=paperAccount.position;
+    var margin=pos.margin||(paperAccount.initialCapital*currentStrategy.params.positionSize);
+    var pnl=pos.side==='SHORT'?(pos.entryPrice-candle.close)*pos.qty:(candle.close-pos.entryPrice)*pos.qty;
+    eq+=margin+pnl;
+  }
   paperAccount.equityHistory.push({time:candle.time,equity:eq});
   if(paperAccount.equityHistory.length>500)paperAccount.equityHistory.shift();
 }
@@ -1136,7 +1141,12 @@ function uH(){
   el.style.color=pChg>=0?'var(--g)':'var(--r)';
   document.querySelector('.price-ticker').style.color=pChg>=0?'var(--g)':'var(--r)';
   var eq=paperAccount.balance;
-  if(paperAccount.position&&cP>0)eq+=paperAccount.position.qty*cP;
+  if(paperAccount.position&&cP>0){
+    var pos=paperAccount.position;
+    var margin=pos.margin||(paperAccount.initialCapital*currentStrategy.params.positionSize);
+    var pnl=pos.side==='SHORT'?(pos.entryPrice-cP)*pos.qty:(cP-pos.entryPrice)*pos.qty;
+    eq+=margin+pnl;
+  }
   document.getElementById('total-equity').textContent='$'+eq.toFixed(2);
   var tp=eq-paperAccount.initialCapital,pe=document.getElementById('today-pnl');
   pe.textContent=(tp>=0?'+':'')+'$'+tp.toFixed(2);
@@ -1697,7 +1707,12 @@ async function loadServerState(){
     if(st.lastRun)addLog('[Server] Last run: '+st.lastRun);
     if(st.runCount)addLog('[Server] Runs: '+st.runCount);
     var eq=paperAccount.balance;
-    if(paperAccount.position&&cP>0)eq+=paperAccount.position.qty*cP;
+    if(paperAccount.position&&cP>0){
+      var pos2=paperAccount.position;
+      var mar=pos2.margin||(paperAccount.initialCapital*0.2);
+      var upnl=pos2.side==='SHORT'?(pos2.entryPrice-cP)*pos2.qty:(cP-pos2.entryPrice)*pos2.qty;
+      eq+=mar+upnl;
+    }
     addLog('[Server] Equity: $'+eq.toFixed(2)+' | '+paperAccount.closedTrades.length+' trades | Mode: GitHub Pages');
     // Re-render with server data
     renderLiveOrders();renderClosedTrades();renderPaperEquityChart('all');
