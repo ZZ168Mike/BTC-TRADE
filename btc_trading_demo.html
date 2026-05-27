@@ -1708,12 +1708,8 @@ async function loadServerState(){
     try{st=await _loadStateViaScript();}catch(e2){}
   }
   if(!st||st.initialCapital===undefined)return;
+  isServerMode=true;
   try{
-    var stateResp=await fetch('paper_state.json?_='+Date.now());
-    if(!stateResp.ok)return;
-    var st=await stateResp.json();
-    if(st.initialCapital===undefined)return;
-    isServerMode=true;
     paperAccount.initialCapital=st.initialCapital||1000;
     paperAccount.balance=st.balance||1000;
     paperAccount.position=st.position||null;
