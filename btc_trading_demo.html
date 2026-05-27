@@ -33,6 +33,15 @@ body{font-family:'Segoe UI','Microsoft YaHei',sans-serif;background:var(--bg);co
 .conn-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 .conn-ok{background:var(--g)}.conn-err{background:var(--r)}.conn-busy{background:var(--o);animation:pulse 0.8s infinite}
 
+/* Position status banner */
+.pos-banner{display:none;padding:6px 12px;background:rgba(88,166,255,0.08);border-bottom:1px solid var(--bd);font-size:11px;align-items:center;gap:16px;flex-shrink:0}
+.pos-banner.active{display:flex}
+.pos-banner .pos-side{font-weight:700;font-size:13px}
+.pos-banner .pos-side.short{color:var(--r)}.pos-banner .pos-side.long{color:var(--g)}
+.pos-banner .pos-info{color:var(--t2);font-size:10px}
+.pos-banner .pos-pnl{font-weight:700;font-size:13px}.pos-banner .pos-pnl.profit{color:var(--g)}.pos-banner .pos-pnl.loss{color:var(--r)}
+.pos-banner .pos-layers{font-size:9px;background:rgba(210,153,29,0.15);color:var(--o);padding:1px 6px;border-radius:8px;font-weight:600}
+
 /* 3-col x 2-row grid: 6 equal-width panels */
 .main{display:grid;grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr;gap:5px;padding:5px;flex:1;min-height:0}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:5px;display:flex;flex-direction:column;overflow:hidden}
@@ -173,6 +182,18 @@ td{padding:3px 7px;border-bottom:1px solid rgba(255,255,255,0.03)}tr:hover td{ba
     <span class="conn-dot conn-err" id="conn-dot"></span>
     <span id="conn-text">Disconnected</span> | Retry:<span id="retry-count">0</span>
   </span>
+</div>
+
+<!-- Position Banner -->
+<div class="pos-banner" id="pos-banner">
+  <span class="pos-side" id="pos-side-label">--</span>
+  <span>均价 <b id="pos-entry">--</b></span>
+  <span>现价 <b id="pos-current">--</b></span>
+  <span>数量 <b id="pos-qty">--</b> BTC</span>
+  <span>保证金 <b id="pos-margin">--</b></span>
+  <span>杠杆 <b id="pos-lev">--</b>x</span>
+  <span class="pos-layers" id="pos-layers" style="display:none">1层</span>
+  <span style="margin-left:auto">浮动 <span class="pos-pnl" id="pos-pnl-display">--</span></span>
 </div>
 
 <div class="main">
@@ -845,7 +866,7 @@ function resetPaperAccount(){
   paperAccount.equityHistory=[];paperAccount.totalTrades=0;
   paperAccount.winningTrades=0;paperAccount.losingTrades=0;
   savePaperAccount();
-  renderLiveOrders();renderClosedTrades();
+  renderPosition();renderLiveOrders();renderClosedTrades();
   if(ce)renderPaperEquityChart();
   addLog('[Paper] Account reset to $1000');
 }
@@ -1018,7 +1039,7 @@ function executePaperTrade(signal,candle,candleIdx){
   });
   if(paperAccount.orders.length>200)paperAccount.orders.shift();
   paperAccount.totalTrades++;
-  savePaperAccount();renderLiveOrders();
+  savePaperAccount();renderPosition();renderLiveOrders();
   addLog('[Paper] BUY @'+candle.close.toFixed(0)+' x'+qty.toFixed(5)+' '+signal.reason);
 }
 
@@ -1071,7 +1092,7 @@ function closePaperPosition(candle,candleIdx,reason){
     ao:pos._entryAO
   });
   paperAccount.position=null;
-  savePaperAccount();renderLiveOrders();renderClosedTrades();
+  savePaperAccount();renderPosition();renderLiveOrders();renderClosedTrades();
   addLog('[Paper] SELL @'+candle.close.toFixed(0)+' P&L:'+(pnl>=0?'+':'')+'$'+pnl.toFixed(2)+' ('+pnlPct+'%) '+reason);
 }
 
@@ -1152,6 +1173,7 @@ function uH(){
   pe.textContent=(tp>=0?'+':'')+'$'+tp.toFixed(2);
   pe.style.color=tp>=0?'var(--g)':'var(--r)';
   document.getElementById('clock').textContent=new Date().toLocaleString('zh-CN');
+  if(paperAccount.position)renderPosition();
 }
 function uM(){
   if(cP<=0)return;
@@ -1199,6 +1221,40 @@ function renderPaperEquityChart(range){
     }]
   });
 }
+function renderPosition(){
+  var pos=paperAccount.position;
+  var banner=document.getElementById('pos-banner');
+  if(!pos){
+    banner.classList.remove('active');
+    return;
+  }
+  banner.classList.add('active');
+  var sideEl=document.getElementById('pos-side-label');
+  var isShort=pos.side==='SHORT';
+  sideEl.textContent=isShort?'🔴 做空':'🟢 做多';
+  sideEl.className='pos-side '+(isShort?'short':'long');
+
+  document.getElementById('pos-entry').textContent='$'+pos.entryPrice.toFixed(1);
+  document.getElementById('pos-qty').textContent=pos.qty.toFixed(5);
+  document.getElementById('pos-margin').textContent='$'+(pos.margin||0).toFixed(0);
+  document.getElementById('pos-lev').textContent=pos.leverage||200;
+
+  var layers=pos._layers||1;
+  var lyEl=document.getElementById('pos-layers');
+  if(layers>1){lyEl.style.display='inline';lyEl.textContent=layers+'层';}
+  else lyEl.style.display='none';
+
+  var lastPrice=cP||pos.entryPrice;
+  document.getElementById('pos-current').textContent='$'+lastPrice.toFixed(1);
+
+  var pnl=isShort?(pos.entryPrice-lastPrice)*pos.qty:(lastPrice-pos.entryPrice)*pos.qty;
+  var margin=pos.margin||200;
+  var pnlPct=margin>0?(pnl/margin*100):0;
+  var pnlEl=document.getElementById('pos-pnl-display');
+  pnlEl.textContent=(pnl>=0?'+':'')+'$'+pnl.toFixed(2)+' ('+(pnl>=0?'+':'')+pnlPct.toFixed(1)+'%)';
+  pnlEl.className='pos-pnl '+(pnl>=0?'profit':'loss');
+}
+
 function renderLiveOrders(){
   var b=document.getElementById('orders-body');
   var orders=paperAccount.orders;
@@ -1457,7 +1513,7 @@ function uiTick(){
 
   // Render paper trading panels
   renderPaperEquityChart(document.getElementById('equity-range')?document.getElementById('equity-range').value:'all');
-  renderLiveOrders();
+  renderPosition();renderLiveOrders();
   renderClosedTrades();
   renderEvolutionStatus();
 
@@ -1735,7 +1791,7 @@ async function loadServerState(){
     }
     addLog('[Server] Equity: $'+eq.toFixed(2)+' | '+paperAccount.closedTrades.length+' trades | Mode: GitHub Pages');
     // Re-render with server data
-    renderLiveOrders();renderClosedTrades();renderPaperEquityChart('all');
+    renderPosition();renderLiveOrders();renderClosedTrades();renderPaperEquityChart('all');
     if(ce)renderLiveChart();
   }catch(e){/* local mode */}
 }
@@ -1754,7 +1810,7 @@ function startAutoRefresh(){
 async function init(){
   apUI();
   initPaperAccount();initEvolution();initL();
-  renderLiveOrders();renderClosedTrades();renderPaperEquityChart('all');
+  renderPosition();renderLiveOrders();renderClosedTrades();renderPaperEquityChart('all');
   await loadServerState(); // Load server state (GitHub Pages) or fallback to local
   if(isServerMode)startAutoRefresh(); // Auto-refresh every 30s for live runner sync
   if(!currentStrategy)initStrategy(); // Default strategy if no server version
