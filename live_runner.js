@@ -346,17 +346,20 @@ function startHttpServer(port) {
     '.css':'text/css','.png':'image/png','.jpg':'image/jpeg','.svg':'image/svg+xml','.ico':'image/x-icon'
   };
   const server = http.createServer((req, res) => {
-    let filePath = path.join(__dirname, req.url.split('?')[0]);
-    if (filePath.endsWith('/') || filePath === __dirname) filePath = path.join(filePath, 'btc_trading_demo.html');
-    if (!filePath.startsWith(__dirname)) { res.writeHead(403); return res.end('Forbidden'); }
-    const ext = path.extname(filePath).toLowerCase();
     try {
+      let urlPath = req.url.split('?')[0];
+      // Normalize: / or /btc_trading_demo.html → serve the HTML
+      if (urlPath === '/' || urlPath === '') urlPath = '/btc_trading_demo.html';
+      let filePath = path.join(__dirname, urlPath);
+      // Security: prevent directory traversal
+      if (filePath.indexOf(__dirname) !== 0) { res.writeHead(403); return res.end('Forbidden'); }
+      const ext = path.extname(filePath).toLowerCase();
       const data = fs.readFileSync(filePath);
       res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
       res.end(data);
     } catch(e) {
-      if (e.code === 'ENOENT') { res.writeHead(200,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Cache-Control':'no-cache'}); res.end('{}'); }
-      else { res.writeHead(500); res.end('Server error'); }
+      if (e.code === 'ENOENT') { res.writeHead(404); res.end('Not found: ' + req.url); }
+      else { res.writeHead(500); res.end('Server error: ' + e.message); }
     }
   });
   server.listen(port, () => {
