@@ -5,6 +5,7 @@
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
+const http = require('http');
 
 const STATE_FILE = path.join(__dirname, 'paper_state.json');
 const STRATEGY_FILE = path.join(__dirname, 'btc_strategy_evolve.json');
@@ -338,8 +339,42 @@ function printStatus() {
   process.stdout.write('\r  [' + now() + '] #' + gRunCount + ' | 权益:$' + equity.toFixed(0) + ' (' + (totalPnl>=0?'+':'') + '$' + totalPnl.toFixed(0) + ') | ' + gState.closedTrades.length + '笔平仓 | ' + posStr + '    ');
 }
 
+// ── HTTP Server (serve UI directory) ──
+function startHttpServer(port) {
+  const MIME = {
+    '.html':'text/html;charset=utf-8','.js':'application/javascript','.json':'application/json;charset=utf-8',
+    '.css':'text/css','.png':'image/png','.jpg':'image/jpeg','.svg':'image/svg+xml','.ico':'image/x-icon'
+  };
+  const server = http.createServer((req, res) => {
+    let filePath = path.join(__dirname, req.url.split('?')[0]);
+    if (filePath.endsWith('/') || filePath === __dirname) filePath = path.join(filePath, 'btc_trading_demo.html');
+    if (!filePath.startsWith(__dirname)) { res.writeHead(403); return res.end('Forbidden'); }
+    const ext = path.extname(filePath).toLowerCase();
+    try {
+      const data = fs.readFileSync(filePath);
+      res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
+      res.end(data);
+    } catch(e) {
+      if (e.code === 'ENOENT') { res.writeHead(200,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*','Cache-Control':'no-cache'}); res.end('{}'); }
+      else { res.writeHead(500); res.end('Server error'); }
+    }
+  });
+  server.listen(port, () => {
+    log('');
+    log('═══════════════════════════════════════════');
+    log('  Web UI: http://localhost:' + port + '/');
+    log('  浏览器打开这个地址即可看到实时交易面板');
+    log('═══════════════════════════════════════════');
+    log('');
+  });
+  return server;
+}
+
 // ── Main ──
 async function main() {
+  const HTTP_PORT = 8080;
+  startHttpServer(HTTP_PORT);
+
   console.log('');
   console.log('╔══════════════════════════════════════════╗');
   console.log('║   BTC 实时交易机器人 — 混沌操作法        ║');
