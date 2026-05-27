@@ -1699,7 +1699,19 @@ async function loadServerState(){
     var eq=paperAccount.balance;
     if(paperAccount.position&&cP>0)eq+=paperAccount.position.qty*cP;
     addLog('[Server] Equity: $'+eq.toFixed(2)+' | '+paperAccount.closedTrades.length+' trades | Mode: GitHub Pages');
+    // Re-render with server data
+    renderLiveOrders();renderClosedTrades();renderPaperEquityChart('all');
+    if(ce)renderLiveChart();
   }catch(e){/* local mode */}
+}
+// Auto-refresh from server state (every 30s for live runner sync)
+let _autoRefreshTimer=null;
+function startAutoRefresh(){
+  if(_autoRefreshTimer)return;
+  _autoRefreshTimer=setInterval(async()=>{
+    await loadServerState();
+    if(currentStrategy)renderStrategyPanel();
+  },30000);
 }
 
 
@@ -1709,6 +1721,7 @@ async function init(){
   initPaperAccount();initEvolution();initL();
   renderLiveOrders();renderClosedTrades();renderPaperEquityChart('all');
   await loadServerState(); // Load server state (GitHub Pages) or fallback to local
+  if(isServerMode)startAutoRefresh(); // Auto-refresh every 30s for live runner sync
   if(!currentStrategy)initStrategy(); // Default strategy if no server version
 
   let label=src()==='okx'?'OKX Live':src()==='binance'?'Binance REST':(CFG.cu||'Custom');
