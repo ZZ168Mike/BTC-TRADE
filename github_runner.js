@@ -344,98 +344,33 @@ async function main() {
 
   if (newTrades > 0) log('New trades this run: ' + newTrades);
 
-  // ── Evolution check ──
-  // Strategy evolves from REAL trade P&L, not backtesting
-  // Win → keep strategy. Loss → analyze & iterate.
-  const regimeChanged = regime.r !== state.lastMarketRegime;
+  // ═══════════════════════════════════════════════════════
+  // ── STRATEGY EVOLUTION LOCK ──
+  // 策略只有在实盘产生 ≥3 笔亏损交易后才允许迭代进化
+  // 在此之前，严格使用混沌原始策略（零过滤器，纯信号驱动）
+  // ═══════════════════════════════════════════════════════
+  const MIN_LOSSES_FOR_EVOLUTION = 3;
+  const currentLossCount = state.closedTrades.filter(t => t.pnl < 0).length;
+  const evolutionLocked = currentLossCount < MIN_LOSSES_FOR_EVOLUTION;
+
   state.lastMarketRegime = regime.r;
   state.lastVolatility = regime.v;
 
-  const recentFeedback = (state.recentTradeFeedback || []).slice(-50);
-  const newClosedSinceLast = state._lastEvolvedTradeTime
-    ? recentFeedback.filter(t => new Date(t.exitTime).getTime() > state._lastEvolvedTradeTime).length
-    : recentFeedback.length;
+  if (evolutionLocked) {
+    // 进化锁定：原策略不动
+    if (state.runCount % 6 === 0) {
+      log('Evolution LOCKED — need ' + MIN_LOSSES_FOR_EVOLUTION + ' losing trades before evolving. Current: ' + currentLossCount);
+    }
+  } else {
+    // ── P&L-DRIVEN EVOLUTION (≥3 losses) ──
+    const recentFeedback = (state.recentTradeFeedback || []).slice(-50);
+    const recentLosses = recentFeedback.filter(t => t.pnl < 0);
+    const recentWins = recentFeedback.filter(t => t.pnl > 0);
 
-  // Check recent trade results for P&L-driven evolution
-  const recentLosses = recentFeedback.filter(t => t.pnl < 0);
-  const recentWins = recentFeedback.filter(t => t.pnl > 0);
-  const hasRecentTrades = recentFeedback.length > 0;
+    log('P&L-driven evolution: ' + recentWins.length + ' wins, ' + recentLosses.length + ' losses (unlocked after ' + currentLossCount + ' losses)');
 
-  // Trigger evolution from: new closed trades, regime change, or periodic
-  const shouldEvolve = regimeChanged || (state.runCount % 8 === 0) || newClosedSinceLast >= 3;
-
-  if (shouldEvolve && recentCandles.length >= 50) {
-    const tradeDrivenEvo = hasRecentTrades && recentFeedback.length >= 2;
-
-    if (tradeDrivenEvo) {
-      // ── P&L-DRIVEN EVOLUTION: learn from actual trade results ──
-      log('P&L-driven evolution: ' + recentWins.length + ' wins, ' + recentLosses.length + ' losses');
-      const totalLoss = recentLosses.reduce((s, t) => s + Math.abs(t.pnl || 0), 0);
-      const totalWin = recentWins.reduce((s, t) => s + Math.abs(t.pnl || 0), 0);
-      const netPnl = totalWin - totalLoss;
-
-      if (netPnl > 0 && recentLosses.length === 0) {
-        // All wins — strategy is working, keep it
-        log('  All trades profitable — keeping strategy');
-      } else if (recentLosses.length > 0) {
-        // Has losses — analyze and iterate
-        log('  Losses detected — analyzing & iterating...');
-
-        // Load history for diagnosis context
-        let allCandles = recentCandles;
-        try {
-          if (fs.existsSync(HISTORY_FILE)) {
-            const hist = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
-            const existingTimes = new Set(hist.map(c => c.time));
-            for (const c of recentCandles) {
-              if (!existingTimes.has(c.time)) hist.push(c);
-            }
-            hist.sort((a, b) => a.time - b.time);
-            allCandles = hist;
-          }
-        } catch(e) { /* use recent only */ }
-
-        // Run deep diagnosis from live losses
-        const diagnosis = strategy._diagnose
-          ? strategy._diagnose(allCandles, strategy.backtest(allCandles), recentLosses)
-          : null;
-
-        // Apply diagnosis to mutate strategy
-        let mutant = strategy._clone ? strategy._clone() : null;
-        if (mutant && diagnosis) {
-          mutant = mutant._mutate ? mutant._mutate(diagnosis) : mutant;
-
-          // Validate mutant still generates trades
-          const mutantBT = mutant.backtest(allCandles);
-          if (mutantBT.closedTrades > 0) {
-            mutant.name = 'Evo-' + new Date().toISOString().slice(0, 10);
-            mutant.version = (parseFloat(strategy.version || '1.0') + 0.1).toFixed(1);
-            mutant.description = 'P&L-evolved: ' + recentLosses.length + ' losses analyzed';
-            const output = {
-              name: mutant.name, version: mutant.version, description: mutant.description,
-              generation: (strategy.generation || 0) + 1,
-              parentInfo: strategy.name + ' v' + strategy.version,
-              params: mutant.params, entryRules: mutant.entryRules,
-              exitRules: mutant.exitRules, filterRules: mutant.filterRules,
-              backtest: { totalReturn: mutantBT.totalReturn, winRate: mutantBT.winRate, closedTrades: mutantBT.closedTrades },
-              evolvedAt: new Date().toISOString(),
-              evolutionReason: 'real-pnl-loss'
-            };
-            fs.writeFileSync(STRATEGY_FILE, JSON.stringify(output, null, 2));
-            log('  Deployed: ' + mutant.name + ' v' + mutant.version + ' (loss-driven evolution)');
-            state.strategyHistory.push({
-              name: mutant.name, version: mutant.version,
-              deployedAt: Date.now(),
-              reason: 'losses-' + recentLosses.length
-            });
-          } else {
-            log('  Mutant has 0 trades — keeping current strategy');
-          }
-        }
-      }
-    } else if (state.closedTrades.length === 0) {
-      // ── BACKTEST EVOLUTION (fallback when no live trades yet) ──
-      log('Backtest evolution (no live trades yet)...');
+    if (recentLosses.length >= 3) {
+      log('  ≥3 recent losses — analyzing & iterating...');
       try {
         let allCandles = recentCandles;
         try {
@@ -450,86 +385,99 @@ async function main() {
           }
         } catch(e) { /* use recent only */ }
 
-        const currentBT = strategy.backtest(allCandles);
-        log('  Current backtest: +' + currentBT.totalReturn + '% win ' + currentBT.winRate + '% trades ' + currentBT.closedTrades);
+        const diagnosis = strategy._diagnose
+          ? strategy._diagnose(allCandles, strategy.backtest(allCandles), recentLosses)
+          : null;
 
-        // Only evolve if backtest shows 0 trades (strategy is broken)
-        if (currentBT.closedTrades === 0) {
-          log('  Backtest shows 0 trades — strategy cannot generate signals, mutating...');
-          // Force mutation with bootstrap diagnosis
-          const forceDiag = { addFilters: [], addEntry: ['ao_zero_cross', 'lips_cross', 'ma_cross'], adjustParams: { minSignalScore: 0.3 }, _bootstrap: true };
-          let mutant = strategy._clone()._mutate(forceDiag);
+        let mutant = strategy._clone ? strategy._clone() : null;
+        if (mutant && diagnosis) {
+          mutant = mutant._mutate ? mutant._mutate(diagnosis) : mutant;
+
           const mutantBT = mutant.backtest(allCandles);
-          log('  Mutant backtest: +' + mutantBT.totalReturn + '% trades ' + mutantBT.closedTrades);
           if (mutantBT.closedTrades > 0) {
             mutant.name = 'Evo-' + new Date().toISOString().slice(0, 10);
             mutant.version = (parseFloat(strategy.version || '1.0') + 0.1).toFixed(1);
-            mutant.description = 'Force-evolved — backtest was 0-trade';
+            mutant.description = 'P&L-evolved after ' + currentLossCount + ' losses';
             const output = {
               name: mutant.name, version: mutant.version, description: mutant.description,
-              generation: (strategy.generation || 0) + 1, parentInfo: strategy.name + ' v' + strategy.version,
+              generation: (strategy.generation || 0) + 1,
+              parentInfo: strategy.name + ' v' + strategy.version,
               params: mutant.params, entryRules: mutant.entryRules,
               exitRules: mutant.exitRules, filterRules: mutant.filterRules,
               backtest: { totalReturn: mutantBT.totalReturn, winRate: mutantBT.winRate, closedTrades: mutantBT.closedTrades },
-              evolvedAt: new Date().toISOString(), evolutionReason: 'zero-trade-fix'
+              evolvedAt: new Date().toISOString(),
+              evolutionReason: 'real-pnl-' + recentLosses.length + '-losses'
             };
             fs.writeFileSync(STRATEGY_FILE, JSON.stringify(output, null, 2));
-            log('  Deployed force-evolved strategy (' + mutantBT.closedTrades + ' trades)');
+            log('  Deployed: ' + mutant.name + ' v' + mutant.version + ' (loss-driven)');
+            state.strategyHistory.push({
+              name: mutant.name, version: mutant.version,
+              deployedAt: Date.now(),
+              reason: 'losses-' + recentLosses.length
+            });
+          } else {
+            log('  Mutant 0-trade — keeping current');
           }
         }
-      } catch(e) { log('Backtest evolution error: ' + e.message); }
+      } catch(e) { log('Evolution error: ' + e.message); }
+    } else {
+      log('  P&L acceptable — keeping strategy');
     }
-    state._lastEvolvedTradeTime = Date.now();
   }
 
-  // ── Bootstrap: force strategy to trade if no trades after threshold runs ──
-  // Fires every run after threshold until first trade happens
-  const TRADE_BOOTSTRAP_RUNS = 4;
-  if (state.closedTrades.length === 0 && !state.position && state.runCount >= TRADE_BOOTSTRAP_RUNS) {
-    log('Bootstrap: zero trades after ' + state.runCount + ' runs — forcing lower thresholds');
-    let changed = false;
+  // ═══════════════════════════════════════════════════════
+  // ── FORCE TRADE: 如果多轮无成交，强制市价开仓 ──
+  // 确保今天一定看到模拟交易
+  // ═══════════════════════════════════════════════════════
+  const FORCE_TRADE_RUNS = 2;
+  if (state.closedTrades.length === 0 && !state.position && state.runCount >= FORCE_TRADE_RUNS) {
+    // 检查最近几根K线是否有过信号
+    const lastCandles = candlesToProcess.slice(-5);
+    const ctx2 = strategy._buildContext(candlesToProcess);
 
-    // Aggressively lower minSignalScore
-    const currentMinScore = strategy.params.minSignalScore;
-    if (currentMinScore > 0.3) {
-      strategy.params.minSignalScore = Math.max(0.3, +(currentMinScore * 0.6).toFixed(2));
-      log('  minSignalScore: ' + currentMinScore + ' -> ' + strategy.params.minSignalScore.toFixed(2));
-      changed = true;
-    }
-
-    // Disable alligator_sleeping
-    const sleepingFilter = strategy.filterRules.find(r => r.type === 'alligator_sleeping' && r.enabled);
-    if (sleepingFilter) {
-      sleepingFilter.enabled = false;
-      log('  Disabled alligator_sleeping filter');
-      changed = true;
-    }
-
-    // Disable ao_direction if it's the last filter standing and we STILL have 0 trades
-    if (state.runCount >= TRADE_BOOTSTRAP_RUNS + 3) {
-      const aoFilter = strategy.filterRules.find(r => r.type === 'ao_direction' && r.enabled);
-      if (aoFilter) {
-        aoFilter.enabled = false;
-        log('  Disabled ao_direction filter (extended bootstrap)');
-        changed = true;
+    // Try generating signal on each of the last candles
+    let forceSignal = null;
+    for (let ci = 0; ci < lastCandles.length; ci++) {
+      const cIdx = candlesToProcess.length - lastCandles.length + ci;
+      const sig = strategy.generateSignal(candlesToProcess, cIdx, ctx2);
+      if (sig && sig.type === 'BUY') {
+        forceSignal = { candle: lastCandles[ci], idx: cIdx, sig: sig };
+        break;
       }
     }
 
-    if (changed) {
-      strategy.name = 'Bootstrap-' + new Date().toISOString().slice(0, 10);
-      strategy.description = 'Bootstrap-adapted (' + state.runCount + ' runs, 0 trades)';
-      strategy.generation = (strategy.generation || 0) + 1;
-      const bootOutput = {
-        name: strategy.name, version: strategy.version, description: strategy.description,
-        generation: strategy.generation, parentInfo: 'bootstrap',
-        params: strategy.params, entryRules: strategy.entryRules,
-        exitRules: strategy.exitRules, filterRules: strategy.filterRules,
-        bootstrapped: true, evolvedAt: new Date().toISOString()
+    // If no signal found at all, force entry at last candle
+    if (!forceSignal) {
+      const lastIdx = candlesToProcess.length - 2;
+      const lastC = candlesToProcess[lastIdx];
+      log('FORCE TRADE: No signals in ' + (state.runCount) + ' runs — forcing BUY at market $' + lastC.close.toFixed(0));
+      forceSignal = { candle: lastC, idx: lastIdx, sig: { type: 'BUY', strength: 1, reason: 'Force entry (no signal after ' + state.runCount + ' runs)' } };
+    }
+
+    const lev = strategy.params.leverage || 1;
+    const margin = state.balance * strategy.params.positionSize;
+    const qty = (margin * lev) / forceSignal.candle.close;
+    if (qty * forceSignal.candle.close >= 10) {
+      state.position = {
+        side: 'BUY', qty: qty, entryPrice: forceSignal.candle.close,
+        entryTime: forceSignal.candle.time, _entryIdx: forceSignal.idx, _trailHi: forceSignal.candle.high,
+        margin: margin, leverage: lev,
+        _exitRules: JSON.parse(JSON.stringify(strategy.exitRules)),
+        _entryRuleType: 'force',
+        _entryRegime: regime.r,
+        _entryVolatility: regime.v,
+        _entryAO: ctx2 && ctx2.ao ? (ctx2.ao[forceSignal.idx] || 0) : 0
       };
-      fs.writeFileSync(STRATEGY_FILE, JSON.stringify(bootOutput, null, 2));
-      log('Bootstrap strategy saved');
-    } else {
-      log('Bootstrap: no changes needed (already relaxed)');
+      state.balance -= margin;
+      state.orders.push({
+        id: ++state.orderIdSeq, time: formatTime(forceSignal.candle.time), side: 'Buy',
+        price: '$' + forceSignal.candle.close.toFixed(1), qty: qty.toFixed(6) + ' BTC',
+        margin: '$' + margin.toFixed(2), leverage: lev + 'x',
+        status: 'filled', type: 'market', reason: forceSignal.sig.reason
+      });
+      state.totalTrades++;
+      newTrades++;
+      log('FORCE BUY @' + forceSignal.candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x [' + forceSignal.sig.reason + ']');
     }
   }
 

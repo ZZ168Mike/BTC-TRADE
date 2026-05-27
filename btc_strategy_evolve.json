@@ -1,9 +1,9 @@
 {
-  "name": "BTC-200x-Chaos",
+  "name": "Chaos-Aggro-v1",
   "version": "1.0",
-  "description": "Chaos theory strategy — Alligator + AO + Fractals — 200x, 80% SL / 200% TP — real P&L driven evolution",
+  "description": "混沌操作法 — 鳄鱼线+AO+分形 — 激进风格，零过滤器起步，实盘盈亏驱动进化",
   "generation": 0,
-  "parentInfo": "Chaos v2.0 original",
+  "parentInfo": "Chaos theory original — Alligator + AO + Fractals",
   "params": {
     "jawPeriod": 13,
     "teethPeriod": 8,
@@ -20,7 +20,7 @@
     "minVolumeRatio": 0.3,
     "rsiMax": 85,
     "rsiMin": 15,
-    "minSignalScore": 0.6
+    "minSignalScore": 0.3
   },
   "entryRules": [
     { "id": "e1", "type": "fractal_breakout", "params": { "lookback": 2 }, "weight": 1.0, "enabled": true },
@@ -38,11 +38,17 @@
     { "id": "x6", "type": "time_exit", "params": {}, "weight": 0.3, "enabled": false }
   ],
   "filterRules": [
-    { "id": "f1", "type": "ao_direction", "params": {}, "weight": 1.0, "enabled": true },
-    { "id": "f2", "type": "alligator_sleeping", "params": {}, "weight": 0.5, "enabled": false },
+    { "id": "f1", "type": "ao_direction", "params": {}, "weight": 1.0, "enabled": false },
+    { "id": "f2", "type": "alligator_sleeping", "params": {}, "weight": 1.0, "enabled": false },
     { "id": "f3", "type": "trend_align", "params": {}, "weight": 0.5, "enabled": false },
     { "id": "f4", "type": "volume_ok", "params": {}, "weight": 0.3, "enabled": false },
     { "id": "f5", "type": "rsi_ok", "params": {}, "weight": 0.4, "enabled": false }
   ],
-  "savedAt": "2026-05-27T00:00:00"
+  "evolutionLock": {
+    "minLossesRequired": 3,
+    "currentLosses": 0,
+    "locked": true,
+    "lockReason": "等待实盘产生至少3笔亏损后，才允许策略迭代。在此之前严格使用混沌原始策略。"
+  },
+  "savedAt": "2026-05-27T04:00:00"
 }
