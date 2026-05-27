@@ -67,6 +67,8 @@ function saveState() {
   if (s.recentTradeFeedback && s.recentTradeFeedback.length > 100) s.recentTradeFeedback = s.recentTradeFeedback.slice(-100);
   if (s.strategyHistory.length > 20) s.strategyHistory = s.strategyHistory.slice(-20);
   fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+  // Also write JS file for file:// HTML access (bypasses fetch() restrictions)
+  fs.writeFileSync(path.join(__dirname, 'paper_state.js'), 'window.__paperState=' + JSON.stringify(s) + ';');
 }
 
 // ── Strategy ──

@@ -1682,8 +1682,32 @@ async function autoLoadEvolved(){
 }
 
 let isServerMode=false;
+// Load state via <script> tag (works on file:// where fetch is blocked)
+function _loadStateViaScript(){
+  return new Promise(function(resolve,reject){
+    var s=document.createElement('script');
+    s.src='paper_state.js?_='+Date.now();
+    s.onload=function(){
+      s.remove();
+      if(window.__paperState)resolve(window.__paperState);
+      else reject('no data');
+    };
+    s.onerror=function(){s.remove();reject('script load failed');};
+    document.head.appendChild(s);
+  });
+}
 async function loadServerState(){
   await autoLoadEvolved();
+  // Try fetch first (HTTP), fallback to script tag (file://)
+  var st=null;
+  try{
+    var stateResp=await fetch('paper_state.json?_='+Date.now());
+    if(stateResp.ok)st=await stateResp.json();
+  }catch(e){}
+  if(!st||st.initialCapital===undefined){
+    try{st=await _loadStateViaScript();}catch(e2){}
+  }
+  if(!st||st.initialCapital===undefined)return;
   try{
     var stateResp=await fetch('paper_state.json?_='+Date.now());
     if(!stateResp.ok)return;
