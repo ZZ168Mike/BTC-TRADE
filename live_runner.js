@@ -23,6 +23,7 @@ let gCtx = null;
 let gRegime = { r: 'neutral', v: 0 };
 let gRunCount = 0;
 let gLastProcessedTime = 0;
+let gCooldownTime = 0; // 平仓后冷却期，防止立即反向开仓
 
 function now() { return new Date().toISOString().slice(11, 23); }
 function log(msg) { console.log('[' + now() + '] ' + msg); }
@@ -234,6 +235,7 @@ function closePosition(exitReason, candle, optionalPrice) {
 
   log('<<< ' + (pnl > 0 ? '💰 PROFIT' : '💸 LOSS') + ' @' + exitPrice.toFixed(0) + ' P&L:$' + pnl.toFixed(2) + ' (' + pnlPctNum.toFixed(1) + '%) ' + exitReason + (layers>1?' ['+layers+'层]':''));
   gState.position = null;
+  gCooldownTime = candle.time; // 冷却期：等下一根K线再开仓
   saveState();
 }
 
@@ -324,11 +326,17 @@ async function scan() {
         }
       }
     }
-    // ── No position: check entry ──
+    // ── No position: check entry (with cooldown after close) ──
     else {
-      const signal = gStrategy.generateSignal(fresh, lastIdx, gCtx);
-      if (signal && (signal.type === 'BUY' || signal.type === 'SELL')) {
-        openPosition(signal, lastCandle, lastIdx);
+      // 平仓后冷却：不立即反向开仓，等待下一根K线的信号
+      if (gCooldownTime > 0 && lastCandle.time <= gCooldownTime) {
+        // Still in cooldown — skip entry on this candle
+      } else {
+        const signal = gStrategy.generateSignal(fresh, lastIdx, gCtx);
+        if (signal && (signal.type === 'BUY' || signal.type === 'SELL')) {
+          gCooldownTime = 0; // clear cooldown
+          openPosition(signal, lastCandle, lastIdx);
+        }
       }
     }
   } catch(e) {
@@ -340,22 +348,36 @@ async function scan() {
 function printStatus() {
   gRunCount++;
   const pos = gState.position;
-  let posStr = '无持仓';
+  const lastPrice = gCandles ? gCandles[gCandles.length - 1].close : (pos ? pos.entryPrice : 0);
+  let posPnl = 0, posPnlPct = '0.0';
   if (pos) {
-    const lastPrice = gCandles ? gCandles[gCandles.length - 1].close : pos.entryPrice;
-    const pnl = pos.side === 'SHORT'
+    posPnl = pos.side === 'SHORT'
       ? (pos.entryPrice - lastPrice) * pos.qty
       : (lastPrice - pos.entryPrice) * pos.qty;
-    const pnlPct = pos.margin > 0 ? (pnl / pos.margin * 100).toFixed(1) : 0;
-    var layers = pos._layers || 1;
-    posStr = (pos.side === 'SHORT' ? '🔴 SHORT' : '🟢 LONG') + '@' + pos.entryPrice.toFixed(0) + ' | 现价:' + lastPrice.toFixed(0) + ' | 浮动:' + (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) + ' (' + (pnl >= 0 ? '+' : '') + pnlPct + '%)' + (layers>1?' | '+layers+'层':'');
+    posPnlPct = (pos.margin > 0 ? (posPnl / pos.margin * 100) : 0).toFixed(1);
   }
-  const equity = gState.balance + (pos ? (pos.margin + ((pos.side === 'SHORT'
-    ? pos.entryPrice - (gCandles ? gCandles[gCandles.length - 1].close : pos.entryPrice)
-    : (gCandles ? gCandles[gCandles.length - 1].close : pos.entryPrice) - pos.entryPrice) * pos.qty)) : 0);
+  const equity = gState.balance + (pos ? (pos.margin + posPnl) : 0);
   const totalPnl = equity - gState.initialCapital;
 
-  process.stdout.write('\r  [' + now() + '] #' + gRunCount + ' | 权益:$' + equity.toFixed(0) + ' (' + (totalPnl>=0?'+':'') + '$' + totalPnl.toFixed(0) + ') | ' + gState.closedTrades.length + '笔平仓 | ' + posStr + '    ');
+  // Multi-line status display
+  const ts = now();
+  console.log('');
+  console.log('═══ ' + ts + ' #' + gRunCount + ' ═══');
+  console.log('  账户: 余额$' + gState.balance.toFixed(2) + ' | 权益$' + equity.toFixed(2) + ' | 累计' + (totalPnl>=0?'+':'') + '$' + totalPnl.toFixed(2));
+  console.log('  历史: ' + gState.closedTrades.length + '笔平仓 | ' + gState.winningTrades + '赢/' + gState.losingTrades + '亏');
+  if (pos) {
+    const layers = pos._layers || 1;
+    const sideLabel = pos.side === 'SHORT' ? '🔴 做空' : '🟢 做多';
+    const pnlSign = posPnl >= 0 ? '+' : '';
+    console.log('  ──────────────────────────────');
+    console.log('  持仓: ' + sideLabel + ' | 均价$' + pos.entryPrice.toFixed(1) + ' | 现价$' + lastPrice.toFixed(1));
+    console.log('  数量: ' + pos.qty.toFixed(6) + ' BTC | 保证金$' + pos.margin.toFixed(0) + ' | 杠杆' + (pos.leverage||200) + 'x' + (layers>1?' | '+layers+'层仓位':''));
+    console.log('  浮动盈亏: ' + pnlSign + '$' + posPnl.toFixed(2) + ' (' + pnlSign + posPnlPct + '%)');
+    if (gCooldownTime > 0) console.log('  ⚠ 冷却中，等下一根K线开仓信号');
+  } else {
+    console.log('  持仓: 无' + (gCooldownTime > 0 ? ' (冷却中，等待新信号)' : ' (等待混沌信号)'));
+  }
+  console.log('');
 }
 
 // ── HTTP Server (serve UI directory) ──

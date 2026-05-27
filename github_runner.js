@@ -45,7 +45,7 @@ async function fetchRecent15m(limit) {
 function loadState() {
   const defaults = {
     balance: 1000, initialCapital: 1000,
-    position: null,
+    position: null, _cooldownTime: 0,
     orders: [], closedTrades: [], equityHistory: [],
     totalTrades: 0, winningTrades: 0, losingTrades: 0,
     orderIdSeq: 0,
@@ -240,6 +240,7 @@ async function main() {
           if (state.recentTradeFeedback.length > 100) state.recentTradeFeedback = state.recentTradeFeedback.slice(-100);
 
           state.position = null;
+          state._cooldownTime = candle.time; // 冷却：等下一根K线再开仓
           newTrades++;
           log((pos.side === 'SHORT' ? 'COVER' : 'SELL') + ' @' + candle.close.toFixed(0) + ' P&L:$' + pnl.toFixed(2) + ' ' + exitReason);
         }
@@ -278,8 +279,12 @@ async function main() {
           }
         }
 
+        // 冷却检查：平仓后不立即在同根K线反向开仓
+        if (state._cooldownTime && candle.time <= state._cooldownTime) continue;
+
         const signal = strategy.generateSignal(candlesToProcess, i, ctx);
         if (signal && (signal.type === 'BUY' || signal.type === 'SELL')) {
+          state._cooldownTime = 0; // 开仓则清冷却
           const entryRegime = regime.r, entryVol = regime.v;
           const entryAO = ctx && ctx.ao ? (ctx.ao[i] || 0) : 0;
           const lev = strategy.params.leverage || 1;
