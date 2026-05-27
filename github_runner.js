@@ -1,6 +1,7 @@
 // ===== GitHub Actions Headless Runner =====
 // Runs paper trading + evolution, persists state to JSON files
-// Called by .github/workflows/trading-bot.yml every 15 minutes
+// Called by .github/workflows/trading-bot.yml every 5 minutes
+// Scans last 100 candles including current in-progress bar for immediate execution
 
 const fs = require('fs');
 const vm = require('vm');
@@ -146,8 +147,8 @@ async function main() {
   log('Fetching recent 15m candles...');
   let recentCandles;
   try {
-    recentCandles = await fetchRecent15m(100);
-    log('Fetched ' + recentCandles.length + ' candles. Latest: ' + formatTime(recentCandles[recentCandles.length-1].time) + ' close=$' + recentCandles[recentCandles.length-1].close.toFixed(1));
+    recentCandles = await fetchRecent15m(150);
+    log('Fetched ' + recentCandles.length + ' candles. Latest: ' + formatTime(recentCandles[recentCandles.length-1].time) + ' close=$' + recentCandles[recentCandles.length-1].close.toFixed(1) + ' (in-progress bar)');
   } catch(e) {
     log('Fetch error: ' + e.message);
     return;
@@ -168,16 +169,16 @@ async function main() {
     lastEquityEntry.equity = Math.round(equity * 100) / 100;
   }
 
-  // Paper trading: check for new completed candles
-  // We process all completed candles that haven't been processed yet
-  // The last candle in recentCandles may be incomplete (current 15m bar)
-  const candlesToProcess = recentCandles.slice(0, -1); // Exclude current incomplete candle
+  // Paper trading: scan last 100 candles including current in-progress bar
+  // Signal on current bar → execute immediately, don't wait for close
+  const candlesToProcess = recentCandles; // Include current incomplete candle
   let newTrades = 0;
 
   // Detect market regime once for trade feedback
   const regime = detectMarketRegime(recentCandles);
 
-  for (let i = Math.max(30, candlesToProcess.length - 20); i < candlesToProcess.length; i++) {
+  const scanStart = Math.max(30, candlesToProcess.length - 100);
+  for (let i = scanStart; i < candlesToProcess.length; i++) {
     const candle = candlesToProcess[i];
     // Skip if already processed (check if we have equity history for this time)
     const alreadyProcessed = state.equityHistory.some(e => e.time === candle.time && !state.position);
@@ -185,64 +186,110 @@ async function main() {
 
     try {
       if (state.position) {
-        // Check exit
+        // ── EXIT CHECK (LONG & SHORT) ──
+        const pos = state.position;
         const ctx = strategy._buildContext(candlesToProcess);
+        const margin = pos.margin || (state.initialCapital * strategy.params.positionSize);
+        const lev = pos.leverage || 1;
         let exitReason = null;
-        // Build exit rules check
-        const exitRules = state.position._exitRules || strategy.exitRules;
-        for (let r = 0; r < exitRules.length; r++) {
-          const rule = exitRules[r];
-          if (!rule.enabled || rule.weight <= 0) continue;
-          if (RuleEvaluators && RuleEvaluators[rule.type]) {
-            exitReason = RuleEvaluators[rule.type](candlesToProcess, i, state.position, ctx);
-            if (exitReason) break;
+
+        // Calculate current P&L based on side
+        let pnl;
+        if (pos.side === 'SHORT') {
+          pnl = (pos.entryPrice - candle.close) * pos.qty;
+        } else {
+          pnl = (candle.close - pos.entryPrice) * pos.qty;
+        }
+        const pnlPctNum = margin > 0 ? (pnl / margin * 100) : 0;
+
+        // 1. Stop loss check (use high/low of current bar for worst case)
+        const slPrice = pos.side === 'SHORT'
+          ? pos.entryPrice * (1 + strategy.params.stopLoss)
+          : pos.entryPrice * (1 - strategy.params.stopLoss);
+        const worstPrice = pos.side === 'SHORT' ? candle.high : candle.low;
+        if (pos.side === 'SHORT' ? worstPrice >= slPrice : worstPrice <= slPrice) {
+          exitReason = 'Stop Loss (margin:' + (strategy.params.stopLoss * 100).toFixed(1) + '% ×' + lev + 'x)';
+          // Recalculate P&L at worst price
+          pnl = pos.side === 'SHORT'
+            ? (pos.entryPrice - worstPrice) * pos.qty
+            : (worstPrice - pos.entryPrice) * pos.qty;
+        }
+
+        // 2. Take profit check
+        if (!exitReason) {
+          const tpPrice = pos.side === 'SHORT'
+            ? pos.entryPrice * (1 - strategy.params.takeProfit)
+            : pos.entryPrice * (1 + strategy.params.takeProfit);
+          const bestPrice = pos.side === 'SHORT' ? candle.low : candle.high;
+          if (pos.side === 'SHORT' ? bestPrice <= tpPrice : bestPrice >= tpPrice) {
+            exitReason = 'Take Profit (margin:' + (strategy.params.takeProfit * 100).toFixed(1) + '% ×' + lev + 'x)';
+            pnl = pos.side === 'SHORT'
+              ? (pos.entryPrice - bestPrice) * pos.qty
+              : (bestPrice - pos.entryPrice) * pos.qty;
           }
         }
-        // Also check maxBars
-        if (!exitReason && strategy.params.maxBars && state.position._entryIdx !== undefined) {
-          const held = i - state.position._entryIdx;
+
+        // 3. Trailing stop
+        if (!exitReason) {
+          if (pos.side === 'SHORT') {
+            if (!pos._trailLo || pos._trailLo > candle.low) pos._trailLo = candle.low;
+            const trailSl = pos._trailLo * (1 + strategy.params.trailStop);
+            if (candle.high >= trailSl) exitReason = 'Trailing Stop SHORT';
+          } else {
+            if (!pos._trailHi || pos._trailHi < candle.high) pos._trailHi = candle.high;
+            const trailSl = pos._trailHi * (1 - strategy.params.trailStop);
+            if (candle.low <= trailSl) exitReason = 'Trailing Stop LONG';
+          }
+        }
+
+        // 4. Signal reversal (strong opposite signal)
+        if (!exitReason) {
+          const sig = strategy.generateSignal(candlesToProcess, i, ctx);
+          if (sig && sig.strength >= 3 &&
+            ((pos.side === 'LONG' && sig.type === 'SELL') || (pos.side === 'SHORT' && sig.type === 'BUY'))) {
+            exitReason = 'Signal Reversal: ' + sig.reason;
+          }
+        }
+
+        // 5. Max bars
+        if (!exitReason && strategy.params.maxBars && pos._entryIdx !== undefined) {
+          const held = i - pos._entryIdx;
           if (held >= strategy.params.maxBars) exitReason = 'Max bars (' + strategy.params.maxBars + ')';
         }
 
         if (exitReason) {
-          let pnl = (candle.close - state.position.entryPrice) * state.position.qty;
-          const margin = state.position.margin || (state.initialCapital * strategy.params.positionSize);
-          // Liquidation check: loss cannot exceed margin
           if (pnl < -margin) pnl = -margin;
           state.balance += margin + pnl;
-          const pnlPctNum = margin > 0 ? (pnl / margin * 100) : 0;
-          const pnlPct = pnlPctNum.toFixed(1);
-          const lev = state.position.leverage || 1;
-          const closedBarsHeld = i - (state.position._entryIdx || 0);
+          const closedBarsHeld = i - (pos._entryIdx || 0);
+          const exitSide = pos.side === 'SHORT' ? 'Buy (cover)' : 'Sell';
+          const tradeLabel = pos.side === 'SHORT' ? 'Short' : 'Long';
           state.orders.push({
-            id: ++state.orderIdSeq, time: formatTime(candle.time), side: 'Sell',
-            price: '$' + candle.close.toFixed(1), qty: state.position.qty.toFixed(6) + ' BTC',
+            id: ++state.orderIdSeq, time: formatTime(candle.time), side: exitSide,
+            price: '$' + candle.close.toFixed(1), qty: pos.qty.toFixed(6) + ' BTC',
             status: 'filled', type: 'market', reason: exitReason
           });
           state.closedTrades.push({
-            entryTime: formatTime(state.position.entryTime), exitTime: formatTime(candle.time),
-            side: 'Long', entryPrice: state.position.entryPrice, exitPrice: candle.close,
-            qty: state.position.qty, margin: Math.round(margin * 100) / 100,
-            pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPct + '%', leverage: lev + 'x',
+            entryTime: formatTime(pos.entryTime), exitTime: formatTime(candle.time),
+            side: tradeLabel, entryPrice: pos.entryPrice, exitPrice: candle.close,
+            qty: pos.qty, margin: Math.round(margin * 100) / 100,
+            pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPctNum.toFixed(1) + '%', leverage: lev + 'x',
             reason: exitReason, barsHeld: closedBarsHeld
           });
           if (pnl > 0) state.winningTrades++; else state.losingTrades++;
-          state.recentTrades.push({ pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPct + '%', reason: exitReason, time: Date.now() });
+          state.recentTrades.push({ pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPctNum.toFixed(1) + '%', reason: exitReason, time: Date.now() });
           if (state.recentTrades.length > 50) state.recentTrades.shift();
 
-          // Save enriched trade feedback for strategy learning
-          const posRef = state.position;
           if (!state.recentTradeFeedback) state.recentTradeFeedback = [];
           state.recentTradeFeedback.push({
-            entryType: posRef._entryRuleType || 'unknown',
-            entryIdx: posRef._entryIdx,
+            entryType: pos._entryRuleType || 'unknown',
+            entryIdx: pos._entryIdx, side: pos.side,
             pnl: Math.round(pnl * 100) / 100,
-            pnlPct: parseFloat(pnlPct),
+            pnlPct: parseFloat(pnlPctNum.toFixed(1)),
             reason: exitReason,
-            entryRegime: posRef._entryRegime || 'unknown',
-            entryVolatility: posRef._entryVolatility || 0,
-            entryAO: posRef._entryAO || 0,
-            entryTime: posRef.entryTime,
+            entryRegime: pos._entryRegime || 'unknown',
+            entryVolatility: pos._entryVolatility || 0,
+            entryAO: pos._entryAO || 0,
+            entryTime: pos.entryTime,
             exitTime: candle.time,
             barsHeld: closedBarsHeld
           });
@@ -250,90 +297,75 @@ async function main() {
 
           state.position = null;
           newTrades++;
-          log('SELL @' + candle.close.toFixed(0) + ' P&L:$' + pnl.toFixed(2) + ' ' + exitReason);
+          log((pos.side === 'SHORT' ? 'COVER' : 'SELL') + ' @' + candle.close.toFixed(0) + ' P&L:$' + pnl.toFixed(2) + ' ' + exitReason);
         }
       } else {
-        // Check entry signal
+        // ── ENTRY CHECK (LONG & SHORT) ──
         const ctx = strategy._buildContext ? strategy._buildContext(candlesToProcess) : null;
         if (!ctx) { log('  WARN: no ctx for signal check'); continue; }
 
-        // --- Signal diagnostics: log what each entry rule produces ---
-        let diagFired = [], diagBlocked = [], entryBestScore = 0;
-        for (let er = 0; er < strategy.entryRules.length; er++) {
-          const rule = strategy.entryRules[er];
-          if (!rule.enabled || rule.weight <= 0) { diagBlocked.push(rule.type + '(disabled/w=0)'); continue; }
-          if (!RuleEvaluators || !RuleEvaluators[rule.type]) { diagBlocked.push(rule.type + '(no-eval)'); continue; }
-          const sig = RuleEvaluators[rule.type](candlesToProcess, i, rule, ctx);
-          if (!sig) { diagBlocked.push(rule.type + '(no-signal)'); continue; }
-          // Check filters
-          let blockedBy = null;
-          for (let f = 0; f < strategy.filterRules.length; f++) {
-            const fr = strategy.filterRules[f];
-            if (!fr.enabled || fr.weight <= 0) continue;
-            if (RuleEvaluators[fr.type] && !RuleEvaluators[fr.type](candlesToProcess, i, sig, ctx)) {
-              blockedBy = fr.type; break;
+        // Signal diagnostics (last candle only)
+        if (i === candlesToProcess.length - 1) {
+          let diagFired = [], diagBlocked = [], bestScore = 0;
+          for (let er = 0; er < strategy.entryRules.length; er++) {
+            const rule = strategy.entryRules[er];
+            if (!rule.enabled || rule.weight <= 0) { diagBlocked.push(rule.type + '(disabled)'); continue; }
+            if (!RuleEvaluators || !RuleEvaluators[rule.type]) { diagBlocked.push(rule.type + '(no-eval)'); continue; }
+            const sig = RuleEvaluators[rule.type](candlesToProcess, i, rule, ctx);
+            if (!sig) { diagBlocked.push(rule.type + '(no-signal)'); continue; }
+            let blockedBy = null;
+            for (let f = 0; f < strategy.filterRules.length; f++) {
+              const fr = strategy.filterRules[f];
+              if (!fr.enabled || fr.weight <= 0) continue;
+              if (RuleEvaluators[fr.type] && !RuleEvaluators[fr.type](candlesToProcess, i, sig, ctx)) { blockedBy = fr.type; break; }
+            }
+            if (blockedBy) { diagBlocked.push(rule.type + '→' + sig.type + '(s' + sig.strength + ' blocked:' + blockedBy + ')'); }
+            else {
+              const score = sig.strength * rule.weight;
+              diagFired.push(rule.type + '→' + sig.type + '(s' + sig.strength + '×w' + rule.weight + '=' + score.toFixed(1) + ')');
+              if (score > bestScore) bestScore = score;
             }
           }
-          if (blockedBy) { diagBlocked.push(rule.type + '→' + sig.type + '(s' + sig.strength + ' blocked:' + blockedBy + ')'); }
-          else {
-            const score = sig.strength * rule.weight;
-            diagFired.push(rule.type + '→' + sig.type + '(s' + sig.strength + '×w' + rule.weight + '=' + score.toFixed(1) + ')');
-            if (score > entryBestScore) { entryBestScore = score; }
-          }
-        }
-        // Log diagnostics once per run (on last candle processed)
-        if (i === candlesToProcess.length - 1) {
           const minScore = strategy.params.minSignalScore || 0;
           if (diagFired.length === 0) {
-            log('  SIGNAL: NONE | minScore=' + minScore.toFixed(1) + ' | entry: ' + diagBlocked.join(', '));
-          } else if (entryBestScore < minScore) {
-            log('  SIGNAL: best=' + entryBestScore.toFixed(1) + ' < min=' + minScore.toFixed(1) + ' | fired: ' + diagFired.join(', '));
+            log('  SIGNAL: NONE | ' + diagBlocked.join(', '));
+          } else {
+            log('  SIGNAL: ' + (bestScore >= minScore ? 'TRADE' : 'WEAK') + ' best=' + bestScore.toFixed(1) + '/min=' + minScore.toFixed(1) + ' | ' + diagFired.join(', '));
           }
         }
 
         const signal = strategy.generateSignal(candlesToProcess, i, ctx);
-        if (signal && signal.type === 'BUY') {
-          // Identify which entry rule produced this signal
-          let entryRuleType = 'unknown';
-          for (let er = 0; er < strategy.entryRules.length; er++) {
-            const rule = strategy.entryRules[er];
-            if (!rule.enabled || rule.weight <= 0) continue;
-            if (RuleEvaluators && RuleEvaluators[rule.type]) {
-              const s = RuleEvaluators[rule.type](candlesToProcess, i, rule, ctx);
-              if (s && s.type === 'BUY') {
-                const score = s.strength * rule.weight;
-                if (score > (entryBestScore > 0 ? entryBestScore - 0.1 : 0)) { entryRuleType = rule.type; }
-              }
-            }
-          }
-          const entryRegime = regime.r;
-          const entryVol = regime.v;
-          const entryAO = ctx && ctx.ao ? ctx.ao[i] : 0;
-
+        if (signal && (signal.type === 'BUY' || signal.type === 'SELL')) {
+          const entryRegime = regime.r, entryVol = regime.v;
+          const entryAO = ctx && ctx.ao ? (ctx.ao[i] || 0) : 0;
           const lev = strategy.params.leverage || 1;
           const margin = state.balance * strategy.params.positionSize;
           const qty = (margin * lev) / candle.close;
           if (qty * candle.close >= 10) {
+            const isShort = signal.type === 'SELL';
             state.position = {
-              side: 'BUY', qty: qty, entryPrice: candle.close,
-              entryTime: candle.time, _entryIdx: i, _trailHi: candle.high,
+              side: isShort ? 'SHORT' : 'LONG',
+              qty: qty, entryPrice: candle.close,
+              entryTime: candle.time, _entryIdx: i,
+              _trailHi: isShort ? undefined : candle.high,
+              _trailLo: isShort ? candle.low : undefined,
               margin: margin, leverage: lev,
-              _exitRules: JSON.parse(JSON.stringify(strategy.exitRules)),
-              _entryRuleType: entryRuleType,
+              _entryRuleType: signal.reason ? signal.reason.split(':')[0] || 'unknown' : 'unknown',
               _entryRegime: entryRegime,
               _entryVolatility: entryVol,
               _entryAO: isNaN(entryAO) ? 0 : entryAO
             };
             state.balance -= margin;
             state.orders.push({
-              id: ++state.orderIdSeq, time: formatTime(candle.time), side: 'Buy',
+              id: ++state.orderIdSeq, time: formatTime(candle.time),
+              side: isShort ? 'Sell (short)' : 'Buy (long)',
               price: '$' + candle.close.toFixed(1), qty: qty.toFixed(6) + ' BTC',
               margin: '$' + margin.toFixed(2), leverage: lev + 'x',
               status: 'filled', type: 'market', reason: signal.reason
             });
             state.totalTrades++;
             newTrades++;
-            log('BUY @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x [' + entryRuleType + '] ' + signal.reason);
+            log((isShort ? 'SHORT' : 'LONG') + ' @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x ' + signal.reason);
           }
         }
       }
@@ -422,62 +454,6 @@ async function main() {
       } catch(e) { log('Evolution error: ' + e.message); }
     } else {
       log('  P&L acceptable — keeping strategy');
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════
-  // ── FORCE TRADE: 如果多轮无成交，强制市价开仓 ──
-  // 确保今天一定看到模拟交易
-  // ═══════════════════════════════════════════════════════
-  const FORCE_TRADE_RUNS = 2;
-  if (state.closedTrades.length === 0 && !state.position && state.runCount >= FORCE_TRADE_RUNS) {
-    // 检查最近几根K线是否有过信号
-    const lastCandles = candlesToProcess.slice(-5);
-    const ctx2 = strategy._buildContext(candlesToProcess);
-
-    // Try generating signal on each of the last candles
-    let forceSignal = null;
-    for (let ci = 0; ci < lastCandles.length; ci++) {
-      const cIdx = candlesToProcess.length - lastCandles.length + ci;
-      const sig = strategy.generateSignal(candlesToProcess, cIdx, ctx2);
-      if (sig && sig.type === 'BUY') {
-        forceSignal = { candle: lastCandles[ci], idx: cIdx, sig: sig };
-        break;
-      }
-    }
-
-    // If no signal found at all, force entry at last candle
-    if (!forceSignal) {
-      const lastIdx = candlesToProcess.length - 2;
-      const lastC = candlesToProcess[lastIdx];
-      log('FORCE TRADE: No signals in ' + (state.runCount) + ' runs — forcing BUY at market $' + lastC.close.toFixed(0));
-      forceSignal = { candle: lastC, idx: lastIdx, sig: { type: 'BUY', strength: 1, reason: 'Force entry (no signal after ' + state.runCount + ' runs)' } };
-    }
-
-    const lev = strategy.params.leverage || 1;
-    const margin = state.balance * strategy.params.positionSize;
-    const qty = (margin * lev) / forceSignal.candle.close;
-    if (qty * forceSignal.candle.close >= 10) {
-      state.position = {
-        side: 'BUY', qty: qty, entryPrice: forceSignal.candle.close,
-        entryTime: forceSignal.candle.time, _entryIdx: forceSignal.idx, _trailHi: forceSignal.candle.high,
-        margin: margin, leverage: lev,
-        _exitRules: JSON.parse(JSON.stringify(strategy.exitRules)),
-        _entryRuleType: 'force',
-        _entryRegime: regime.r,
-        _entryVolatility: regime.v,
-        _entryAO: ctx2 && ctx2.ao ? (ctx2.ao[forceSignal.idx] || 0) : 0
-      };
-      state.balance -= margin;
-      state.orders.push({
-        id: ++state.orderIdSeq, time: formatTime(forceSignal.candle.time), side: 'Buy',
-        price: '$' + forceSignal.candle.close.toFixed(1), qty: qty.toFixed(6) + ' BTC',
-        margin: '$' + margin.toFixed(2), leverage: lev + 'x',
-        status: 'filled', type: 'market', reason: forceSignal.sig.reason
-      });
-      state.totalTrades++;
-      newTrades++;
-      log('FORCE BUY @' + forceSignal.candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x [' + forceSignal.sig.reason + ']');
     }
   }
 
