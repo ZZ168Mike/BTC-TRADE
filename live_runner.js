@@ -114,7 +114,7 @@ function detectMarketRegime(candles) {
   return { r: regime, v: volatility };
 }
 
-// ── Open position ──
+// ── Open position (support pyramid adding) ──
 function openPosition(signal, candle, idx) {
   const s = gStrategy;
   const isShort = signal.type === 'SELL';
@@ -123,67 +123,96 @@ function openPosition(signal, candle, idx) {
   const qty = (margin * lev) / candle.close;
   if (qty * candle.close < 10) { log('  Order too small, skip'); return; }
 
-  gState.position = {
-    side: isShort ? 'SHORT' : 'LONG',
-    qty: qty, entryPrice: candle.close,
-    entryTime: candle.time, _entryIdx: idx,
-    _trailHi: isShort ? undefined : candle.high,
-    _trailLo: isShort ? candle.low : undefined,
-    margin: margin, leverage: lev,
-    _entryRuleType: signal.reason.split(':')[0] || 'unknown',
-    _entryRegime: gRegime.r,
-    _entryVolatility: gRegime.v,
-    _entryAO: gCtx && gCtx.ao ? (gCtx.ao[idx] || 0) : 0
-  };
-  gState.balance -= margin;
-  gState.orders.push({
-    id: ++gState.orderIdSeq,
-    time: new Date(candle.time).toISOString().slice(11, 19),
-    side: isShort ? 'Sell (short)' : 'Buy (long)',
-    price: '$' + candle.close.toFixed(1), qty: qty.toFixed(6) + ' BTC',
-    margin: '$' + margin.toFixed(2), leverage: lev + 'x',
-    status: 'filled', type: 'market', reason: signal.reason
-  });
-  gState.totalTrades++;
-  log('>>> ' + (isShort ? '🔴 SHORT' : '🟢 LONG') + ' @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x');
-  log('    ' + signal.reason + ' [s' + signal.strength + ']');
-  saveState();
+  const existingPos = gState.position;
+  if (existingPos && existingPos.side === (isShort ? 'SHORT' : 'LONG')) {
+    // 金字塔加仓：同向信号，增加一层仓位
+    const maxLayers = s.params.maxPositions || 3;
+    const currentLayers = existingPos._layers || 1;
+    if (currentLayers >= maxLayers) { log('  已达最大仓位层数(' + maxLayers + ')，不加仓'); return; }
+    // Weighted average entry price
+    const totalQty = existingPos.qty + qty;
+    existingPos.entryPrice = (existingPos.entryPrice * existingPos.qty + candle.close * qty) / totalQty;
+    existingPos.qty = totalQty;
+    existingPos.margin += margin;
+    existingPos._layers = currentLayers + 1;
+    existingPos._entryIdx = idx; // update to latest entry
+    gState.balance -= margin;
+    gState.orders.push({
+      id: ++gState.orderIdSeq,
+      time: new Date(candle.time).toISOString().slice(11, 19),
+      side: isShort ? 'Sell (short+#' + existingPos._layers + ')' : 'Buy (long+#' + existingPos._layers + ')',
+      price: '$' + candle.close.toFixed(1), qty: qty.toFixed(6) + ' BTC',
+      margin: '$' + margin.toFixed(2), leverage: lev + 'x',
+      status: 'filled', type: 'market', reason: '加仓: ' + signal.reason
+    });
+    gState.totalTrades++;
+    log('>>> 📈 加仓 #' + existingPos._layers + ' ' + (isShort ? '🔴 SHORT' : '🟢 LONG') + ' @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0));
+    log('    总仓位:' + totalQty.toFixed(5) + ' BTC 均价:' + existingPos.entryPrice.toFixed(0) + ' 总保证金:$' + existingPos.margin.toFixed(0) + ' 层数:' + existingPos._layers);
+    saveState();
+  } else {
+    // 新建仓位
+    gState.position = {
+      side: isShort ? 'SHORT' : 'LONG',
+      qty: qty, entryPrice: candle.close,
+      entryTime: candle.time, _entryIdx: idx, _layers: 1,
+      margin: margin, leverage: lev,
+      _entryRuleType: signal.reason.split(':')[0] || 'unknown',
+      _entryRegime: gRegime.r,
+      _entryVolatility: gRegime.v,
+      _entryAO: gCtx && gCtx.ao ? (gCtx.ao[idx] || 0) : 0
+    };
+    gState.balance -= margin;
+    gState.orders.push({
+      id: ++gState.orderIdSeq,
+      time: new Date(candle.time).toISOString().slice(11, 19),
+      side: isShort ? 'Sell (short)' : 'Buy (long)',
+      price: '$' + candle.close.toFixed(1), qty: qty.toFixed(6) + ' BTC',
+      margin: '$' + margin.toFixed(2), leverage: lev + 'x',
+      status: 'filled', type: 'market', reason: signal.reason
+    });
+    gState.totalTrades++;
+    log('>>> ' + (isShort ? '🔴 SHORT' : '🟢 LONG') + ' @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x');
+    log('    ' + signal.reason + ' [s' + signal.strength + ']');
+    saveState();
+  }
 }
 
 // ── Close position ──
-function closePosition(exitReason, candle) {
+function closePosition(exitReason, candle, optionalPrice) {
   const pos = gState.position;
+  const exitPrice = optionalPrice || candle.close;
   const margin = pos.margin || (gState.initialCapital * gStrategy.params.positionSize);
   const lev = pos.leverage || 1;
 
   let pnl;
   if (pos.side === 'SHORT') {
-    pnl = (pos.entryPrice - candle.close) * pos.qty;
+    pnl = (pos.entryPrice - exitPrice) * pos.qty;
   } else {
-    pnl = (candle.close - pos.entryPrice) * pos.qty;
+    pnl = (exitPrice - pos.entryPrice) * pos.qty;
   }
   if (pnl < -margin) pnl = -margin;
   gState.balance += margin + pnl;
   const pnlPctNum = margin > 0 ? (pnl / margin * 100) : 0;
   const barsHeld = (gCandles.length - 1) - (pos._entryIdx || 0);
+  const layers = pos._layers || 1;
 
   const exitSide = pos.side === 'SHORT' ? 'Buy (cover)' : 'Sell';
   gState.orders.push({
     id: ++gState.orderIdSeq,
     time: new Date(candle.time).toISOString().slice(11, 19),
     side: exitSide,
-    price: '$' + candle.close.toFixed(1), qty: pos.qty.toFixed(6) + ' BTC',
+    price: '$' + exitPrice.toFixed(1), qty: pos.qty.toFixed(6) + ' BTC',
     status: 'filled', type: 'market', reason: exitReason
   });
   gState.closedTrades.push({
     entryTime: new Date(pos.entryTime).toISOString().slice(11, 19),
     exitTime: new Date(candle.time).toISOString().slice(11, 19),
     side: pos.side === 'SHORT' ? 'Short' : 'Long',
-    entryPrice: pos.entryPrice, exitPrice: candle.close,
+    entryPrice: pos.entryPrice, exitPrice: exitPrice,
     qty: pos.qty, margin: Math.round(margin * 100) / 100,
     pnl: Math.round(pnl * 100) / 100,
     pnlPct: pnlPctNum.toFixed(1) + '%', leverage: lev + 'x',
-    reason: exitReason, barsHeld: barsHeld
+    reason: exitReason, barsHeld: barsHeld, layers: layers
   });
   if (pnl > 0) gState.winningTrades++; else gState.losingTrades++;
   gState.recentTrades.push({ pnl: Math.round(pnl * 100) / 100, pnlPct: pnlPctNum.toFixed(1) + '%', reason: exitReason, time: Date.now() });
@@ -192,7 +221,7 @@ function closePosition(exitReason, candle) {
   if (!gState.recentTradeFeedback) gState.recentTradeFeedback = [];
   gState.recentTradeFeedback.push({
     entryType: pos._entryRuleType || 'unknown',
-    entryIdx: pos._entryIdx, side: pos.side,
+    entryIdx: pos._entryIdx, side: pos.side, layers: layers,
     pnl: Math.round(pnl * 100) / 100,
     pnlPct: parseFloat(pnlPctNum.toFixed(1)),
     reason: exitReason,
@@ -203,62 +232,43 @@ function closePosition(exitReason, candle) {
   });
   if (gState.recentTradeFeedback.length > 100) gState.recentTradeFeedback = gState.recentTradeFeedback.slice(-100);
 
-  log('<<< ' + (pnl > 0 ? '💰 PROFIT' : '💸 LOSS') + ' @' + candle.close.toFixed(0) + ' P&L:$' + pnl.toFixed(2) + ' (' + pnlPctNum.toFixed(1) + '%) ' + exitReason);
+  log('<<< ' + (pnl > 0 ? '💰 PROFIT' : '💸 LOSS') + ' @' + exitPrice.toFixed(0) + ' P&L:$' + pnl.toFixed(2) + ' (' + pnlPctNum.toFixed(1) + '%) ' + exitReason + (layers>1?' ['+layers+'层]':''));
   gState.position = null;
   saveState();
 }
 
-// ── Check exit conditions ──
+// ── Check exit conditions (纯混沌操作法离场) ──
 function checkExit(candle) {
   const pos = gState.position;
-  const s = gStrategy;
-  const margin = pos.margin || (gState.initialCapital * s.params.positionSize);
-  const lev = pos.leverage || 1;
 
-  // Stop loss
-  const slPrice = pos.side === 'SHORT'
-    ? pos.entryPrice * (1 + s.params.stopLoss)
-    : pos.entryPrice * (1 - s.params.stopLoss);
-  const worstPrice = pos.side === 'SHORT' ? candle.high : candle.low;
-  if (pos.side === 'SHORT' ? worstPrice >= slPrice : worstPrice <= slPrice) {
-    return 'Stop Loss (margin:' + (s.params.stopLoss * 100).toFixed(1) + '% ×' + lev + 'x)';
-  }
-
-  // Take profit
-  const tpPrice = pos.side === 'SHORT'
-    ? pos.entryPrice * (1 - s.params.takeProfit)
-    : pos.entryPrice * (1 + s.params.takeProfit);
-  const bestPrice = pos.side === 'SHORT' ? candle.low : candle.high;
-  if (pos.side === 'SHORT' ? bestPrice <= tpPrice : bestPrice >= tpPrice) {
-    return 'Take Profit (margin:' + (s.params.takeProfit * 100).toFixed(1) + '% ×' + lev + 'x)';
-  }
-
-  // Trailing stop
-  if (pos.side === 'SHORT') {
-    if (!pos._trailLo || pos._trailLo > candle.low) pos._trailLo = candle.low;
-    const trailSl = pos._trailLo * (1 + s.params.trailStop);
-    if (candle.high >= trailSl) return 'Trailing Stop SHORT';
-  } else {
-    if (!pos._trailHi || pos._trailHi < candle.high) pos._trailHi = candle.high;
-    const trailSl = pos._trailHi * (1 - s.params.trailStop);
-    if (candle.low <= trailSl) return 'Trailing Stop LONG';
-  }
-
-  // Signal reversal (strength 3+)
+  // Use strategy's exit rules (chaos-based: teeth/lips cross, AO reverse, fractal reverse, alligator flip)
   const lastIdx = gCandles.length - 1;
-  const sig = gStrategy.generateSignal(gCandles, lastIdx, gCtx);
-  if (sig && sig.strength >= 3 &&
-    ((pos.side === 'LONG' && sig.type === 'SELL') || (pos.side === 'SHORT' && sig.type === 'BUY'))) {
-    return 'Signal Reversal: ' + sig.reason;
-  }
-
-  // Max bars
-  if (s.params.maxBars && pos._entryIdx !== undefined) {
-    const held = gCandles.length - 1 - pos._entryIdx;
-    if (held >= s.params.maxBars) return 'Max bars (' + s.params.maxBars + ')';
-  }
+  const exitReason = gStrategy._checkExit(gCandles, lastIdx, pos, gCtx);
+  if (exitReason) return exitReason;
 
   return null;
+}
+
+// ── Check if should add to position (混沌加仓) ──
+function checkAddPosition(signal, candle, idx) {
+  const pos = gState.position;
+  if (!pos) return false;
+  const s = gStrategy;
+  const maxLayers = s.params.maxPositions || 3;
+  if ((pos._layers || 1) >= maxLayers) return false;
+  if (!s.params.addOnFractal && !s.params.addOnAOSaucer) return false;
+
+  // Must be same direction as existing position
+  const isShort = pos.side === 'SHORT';
+  if ((isShort && signal.type !== 'SELL') || (!isShort && signal.type !== 'BUY')) return false;
+
+  // 1. Add on fractal breakout continuation (strength 2+)
+  if (s.params.addOnFractal && signal.reason.indexOf('Fractal') >= 0 && signal.strength >= 2) return true;
+
+  // 2. Add on AO confirming momentum (AO zero cross or alligator alignment)
+  if (s.params.addOnAOSaucer && (signal.reason.indexOf('AO') >= 0 || signal.reason.indexOf('Alligator') >= 0) && signal.strength >= 1) return true;
+
+  return false;
 }
 
 // ── Main scan loop ──
@@ -301,14 +311,20 @@ async function scan() {
     }
     saveState();
 
-    // ── Check exit if holding position ──
+    // ── Holding position: check exit + add position ──
     if (gState.position) {
       const exitReason = checkExit(lastCandle);
       if (exitReason) {
         closePosition(exitReason, lastCandle);
+      } else {
+        // Check for pyramid add-position signal
+        const sig = gStrategy.generateSignal(fresh, lastIdx, gCtx);
+        if (sig && checkAddPosition(sig, lastCandle, lastIdx)) {
+          openPosition(sig, lastCandle, lastIdx);
+        }
       }
     }
-    // ── Check entry if no position ──
+    // ── No position: check entry ──
     else {
       const signal = gStrategy.generateSignal(fresh, lastIdx, gCtx);
       if (signal && (signal.type === 'BUY' || signal.type === 'SELL')) {
@@ -331,7 +347,8 @@ function printStatus() {
       ? (pos.entryPrice - lastPrice) * pos.qty
       : (lastPrice - pos.entryPrice) * pos.qty;
     const pnlPct = pos.margin > 0 ? (pnl / pos.margin * 100).toFixed(1) : 0;
-    posStr = (pos.side === 'SHORT' ? '🔴 SHORT' : '🟢 LONG') + ' @' + pos.entryPrice.toFixed(0) + ' | 现价:' + lastPrice.toFixed(0) + ' | 浮动:' + (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) + ' (' + (pnl >= 0 ? '+' : '') + pnlPct + '%)';
+    var layers = pos._layers || 1;
+    posStr = (pos.side === 'SHORT' ? '🔴 SHORT' : '🟢 LONG') + '@' + pos.entryPrice.toFixed(0) + ' | 现价:' + lastPrice.toFixed(0) + ' | 浮动:' + (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2) + ' (' + (pnl >= 0 ? '+' : '') + pnlPct + '%)' + (layers>1?' | '+layers+'层':'');
   }
   const equity = gState.balance + (pos ? (pos.margin + ((pos.side === 'SHORT'
     ? pos.entryPrice - (gCandles ? gCandles[gCandles.length - 1].close : pos.entryPrice)
@@ -382,9 +399,9 @@ async function main() {
 
   console.log('');
   console.log('╔══════════════════════════════════════════╗');
-  console.log('║   BTC 实时交易机器人 — 混沌操作法        ║');
+  console.log('║   BTC 实时交易 — 纯混沌操作法            ║');
+  console.log('║   鳄鱼线+AO+分形  结构离场 金字塔加仓    ║');
   console.log('║   每30秒扫描Binance 15分钟K线            ║');
-  console.log('║   信号出现→立即执行  止损80% 止盈200%    ║');
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
 
@@ -393,8 +410,10 @@ async function main() {
   log('策略: ' + gStrategy.name + ' v' + gStrategy.version);
   log('过滤器: ' + (gStrategy.filterRules.filter(r => r.enabled).map(r => r.type).join(', ') || '无'));
   log('初始资金: $' + gState.initialCapital + ' | 余额: $' + gState.balance.toFixed(2));
-  log('杠杆: ' + gStrategy.params.leverage + 'x | 止损: ' + (gStrategy.params.stopLoss * 100).toFixed(1) + '% | 止盈: ' + (gStrategy.params.takeProfit * 100).toFixed(1) + '%');
-  log('持仓比例: ' + (gStrategy.params.positionSize * 100).toFixed(0) + '%');
+  log('杠杆: ' + gStrategy.params.leverage + 'x | 加仓层数: ≤' + (gStrategy.params.maxPositions||3) + ' | 最长持仓: ' + (gStrategy.params.maxBars||80) + '根K线');
+  log('离场: 鳄鱼线牙齿/嘴唇 | AO反转 | 反向分形 | 鳄鱼线翻转');
+  log('加仓: 同向分形突破 | AO动量确认');
+  log('保证金比例: ' + (gStrategy.params.positionSize * 100).toFixed(0) + '%');
   log('');
   log('开始实时扫描... (Ctrl+C 停止)');
   log('');

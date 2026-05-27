@@ -1,9 +1,9 @@
 {
-  "name": "Chaos-Aggro-v1",
+  "name": "Chaos-Pure-v1",
   "version": "1.0",
-  "description": "混沌操作法 — 鳄鱼线+AO+分形 — 激进风格，零过滤器起步，实盘盈亏驱动进化",
+  "description": "纯混沌操作法 — 无固定止盈止损，鳄鱼线+AO+分形结构离场，金字塔加仓",
   "generation": 0,
-  "parentInfo": "Chaos theory original — Alligator + AO + Fractals",
+  "parentInfo": "Bill Williams Trading Chaos — Alligator + AO + Fractals",
   "params": {
     "jawPeriod": 13,
     "teethPeriod": 8,
@@ -12,10 +12,10 @@
     "aoSlow": 34,
     "leverage": 200,
     "positionSize": 0.2,
-    "stopLoss": 0.0040,
-    "takeProfit": 0.0100,
-    "trailStop": 0.02,
-    "maxBars": 50,
+    "maxPositions": 3,
+    "addOnFractal": true,
+    "addOnAOSaucer": true,
+    "maxBars": 80,
     "minSpread": 0.0003,
     "minVolumeRatio": 0.3,
     "rsiMax": 85,
@@ -30,12 +30,12 @@
     { "id": "e5", "type": "ma_cross", "params": { "fastPeriod": 5, "slowPeriod": 10 }, "weight": 0.6, "enabled": true }
   ],
   "exitRules": [
-    { "id": "x1", "type": "stop_loss", "params": {}, "weight": 1.0, "enabled": true },
-    { "id": "x2", "type": "take_profit", "params": {}, "weight": 1.0, "enabled": true },
-    { "id": "x3", "type": "trailing_stop", "params": {}, "weight": 0.9, "enabled": true },
-    { "id": "x4", "type": "signal_reverse", "params": {}, "weight": 0.8, "enabled": true },
-    { "id": "x5", "type": "lips_reverse", "params": {}, "weight": 0.3, "enabled": false },
-    { "id": "x6", "type": "time_exit", "params": {}, "weight": 0.3, "enabled": false }
+    { "id": "x1", "type": "chaos_teeth_stop", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "x2", "type": "chaos_lips_trail", "params": {}, "weight": 0.8, "enabled": true },
+    { "id": "x3", "type": "chaos_ao_reverse", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "x4", "type": "chaos_fractal_reverse", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "x5", "type": "chaos_alligator_flip", "params": {}, "weight": 0.9, "enabled": true },
+    { "id": "x6", "type": "time_exit", "params": {}, "weight": 0.3, "enabled": true }
   ],
   "filterRules": [
     { "id": "f1", "type": "ao_direction", "params": {}, "weight": 1.0, "enabled": false },
@@ -48,7 +48,7 @@
     "minLossesRequired": 3,
     "currentLosses": 0,
     "locked": true,
-    "lockReason": "等待实盘产生至少3笔亏损后，才允许策略迭代。在此之前严格使用混沌原始策略。"
+    "lockReason": "混沌操作法：实盘≥3笔亏损后才迭代。盈利→金字塔加仓扩大盈利；亏损→混沌信号止损离场。"
   },
-  "savedAt": "2026-05-27T04:00:00"
+  "savedAt": "2026-05-27T06:00:00"
 }

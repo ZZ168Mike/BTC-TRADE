@@ -186,78 +186,23 @@ async function main() {
 
     try {
       if (state.position) {
-        // ── EXIT CHECK (LONG & SHORT) ──
+        // ── EXIT CHECK — 纯混沌操作法离场 ──
         const pos = state.position;
         const ctx = strategy._buildContext(candlesToProcess);
         const margin = pos.margin || (state.initialCapital * strategy.params.positionSize);
         const lev = pos.leverage || 1;
-        let exitReason = null;
 
-        // Calculate current P&L based on side
-        let pnl;
-        if (pos.side === 'SHORT') {
-          pnl = (pos.entryPrice - candle.close) * pos.qty;
-        } else {
-          pnl = (candle.close - pos.entryPrice) * pos.qty;
-        }
-        const pnlPctNum = margin > 0 ? (pnl / margin * 100) : 0;
-
-        // 1. Stop loss check (use high/low of current bar for worst case)
-        const slPrice = pos.side === 'SHORT'
-          ? pos.entryPrice * (1 + strategy.params.stopLoss)
-          : pos.entryPrice * (1 - strategy.params.stopLoss);
-        const worstPrice = pos.side === 'SHORT' ? candle.high : candle.low;
-        if (pos.side === 'SHORT' ? worstPrice >= slPrice : worstPrice <= slPrice) {
-          exitReason = 'Stop Loss (margin:' + (strategy.params.stopLoss * 100).toFixed(1) + '% ×' + lev + 'x)';
-          // Recalculate P&L at worst price
-          pnl = pos.side === 'SHORT'
-            ? (pos.entryPrice - worstPrice) * pos.qty
-            : (worstPrice - pos.entryPrice) * pos.qty;
-        }
-
-        // 2. Take profit check
-        if (!exitReason) {
-          const tpPrice = pos.side === 'SHORT'
-            ? pos.entryPrice * (1 - strategy.params.takeProfit)
-            : pos.entryPrice * (1 + strategy.params.takeProfit);
-          const bestPrice = pos.side === 'SHORT' ? candle.low : candle.high;
-          if (pos.side === 'SHORT' ? bestPrice <= tpPrice : bestPrice >= tpPrice) {
-            exitReason = 'Take Profit (margin:' + (strategy.params.takeProfit * 100).toFixed(1) + '% ×' + lev + 'x)';
-            pnl = pos.side === 'SHORT'
-              ? (pos.entryPrice - bestPrice) * pos.qty
-              : (bestPrice - pos.entryPrice) * pos.qty;
-          }
-        }
-
-        // 3. Trailing stop
-        if (!exitReason) {
-          if (pos.side === 'SHORT') {
-            if (!pos._trailLo || pos._trailLo > candle.low) pos._trailLo = candle.low;
-            const trailSl = pos._trailLo * (1 + strategy.params.trailStop);
-            if (candle.high >= trailSl) exitReason = 'Trailing Stop SHORT';
-          } else {
-            if (!pos._trailHi || pos._trailHi < candle.high) pos._trailHi = candle.high;
-            const trailSl = pos._trailHi * (1 - strategy.params.trailStop);
-            if (candle.low <= trailSl) exitReason = 'Trailing Stop LONG';
-          }
-        }
-
-        // 4. Signal reversal (strong opposite signal)
-        if (!exitReason) {
-          const sig = strategy.generateSignal(candlesToProcess, i, ctx);
-          if (sig && sig.strength >= 3 &&
-            ((pos.side === 'LONG' && sig.type === 'SELL') || (pos.side === 'SHORT' && sig.type === 'BUY'))) {
-            exitReason = 'Signal Reversal: ' + sig.reason;
-          }
-        }
-
-        // 5. Max bars
-        if (!exitReason && strategy.params.maxBars && pos._entryIdx !== undefined) {
-          const held = i - pos._entryIdx;
-          if (held >= strategy.params.maxBars) exitReason = 'Max bars (' + strategy.params.maxBars + ')';
-        }
+        // Use strategy's chaos exit rules
+        const exitReason = strategy._checkExit ? strategy._checkExit(candlesToProcess, i, pos, ctx) : null;
 
         if (exitReason) {
+          let pnl;
+          if (pos.side === 'SHORT') {
+            pnl = (pos.entryPrice - candle.close) * pos.qty;
+          } else {
+            pnl = (candle.close - pos.entryPrice) * pos.qty;
+          }
+          const pnlPctNum = margin > 0 ? (pnl / margin * 100) : 0;
           if (pnl < -margin) pnl = -margin;
           state.balance += margin + pnl;
           const closedBarsHeld = i - (pos._entryIdx || 0);
@@ -283,7 +228,6 @@ async function main() {
           state.recentTradeFeedback.push({
             entryType: pos._entryRuleType || 'unknown',
             entryIdx: pos._entryIdx, side: pos.side,
-            pnl: Math.round(pnl * 100) / 100,
             pnlPct: parseFloat(pnlPctNum.toFixed(1)),
             reason: exitReason,
             entryRegime: pos._entryRegime || 'unknown',
