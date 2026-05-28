@@ -503,10 +503,22 @@ function startHttpServer(port) {
         gState.recentTrades = [];
         gState.recentTradeFeedback = [];
         gState.runCount = 0;
-        gCooldownTime = 0;
+        // 设置冷却，防止立即被扫描循环重新开仓
+        if (gCandles && gCandles.length > 0) {
+          gCooldownTime = gCandles[gCandles.length - 1].time;
+        }
         saveState();
+        // Return full clean state so UI can apply directly without re-fetch
         res.writeHead(200, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'});
-        return res.end(JSON.stringify({ok:true,balance:gState.balance}));
+        return res.end(JSON.stringify({
+          ok:true,
+          state:{
+            balance:gState.balance,initialCapital:gState.initialCapital,
+            position:null,orders:[],closedTrades:[],equityHistory:[],
+            totalTrades:0,winningTrades:0,losingTrades:0,orderIdSeq:0,
+            runCount:0
+          }
+        }));
       }
 
       // Normalize: / or /btc_trading_demo.html → serve the HTML

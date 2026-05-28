@@ -861,6 +861,7 @@ function savePaperAccount(){
 }
 function resetPaperAccount(){
   if(!confirm('Reset paper account to $1000? This clears all history.'))return;
+  // Clear local immediately
   paperAccount.balance=1000;paperAccount.position=null;
   paperAccount.orders=[];paperAccount.closedTrades=[];
   paperAccount.equityHistory=[];paperAccount.totalTrades=0;
@@ -869,10 +870,24 @@ function resetPaperAccount(){
   renderPosition();renderLiveOrders();renderClosedTrades();
   if(ce)renderPaperEquityChart();
   addLog('[Paper] Account reset to $1000');
-  // Also reset server-side state (live runner)
+  // Reset server and apply clean state directly (avoids re-fetch race)
   fetch('/reset').then(function(r){return r.json()}).then(function(d){
-    if(d.ok)addLog('[Server] State reset synced');
-    loadServerState(); // Reload clean state
+    if(d.ok&&d.state){
+      var st=d.state;
+      paperAccount.balance=st.balance||1000;
+      paperAccount.position=st.position;
+      paperAccount.orders=st.orders||[];
+      paperAccount.closedTrades=st.closedTrades||[];
+      paperAccount.equityHistory=st.equityHistory||[];
+      paperAccount.totalTrades=st.totalTrades||0;
+      paperAccount.winningTrades=st.winningTrades||0;
+      paperAccount.losingTrades=st.losingTrades||0;
+      paperAccount.orderIdSeq=st.orderIdSeq||0;
+      savePaperAccount();
+      renderPosition();renderLiveOrders();renderClosedTrades();
+      if(ce)renderPaperEquityChart();
+      addLog('[Server] Reset synced — clean state applied');
+    }
   }).catch(function(){});
 }
 
