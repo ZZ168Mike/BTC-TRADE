@@ -869,6 +869,11 @@ function resetPaperAccount(){
   renderPosition();renderLiveOrders();renderClosedTrades();
   if(ce)renderPaperEquityChart();
   addLog('[Paper] Account reset to $1000');
+  // Also reset server-side state (live runner)
+  fetch('/reset').then(function(r){return r.json()}).then(function(d){
+    if(d.ok)addLog('[Server] State reset synced');
+    loadServerState(); // Reload clean state
+  }).catch(function(){});
 }
 
 // ===== Self-Evolution State =====

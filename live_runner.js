@@ -115,12 +115,106 @@ function detectMarketRegime(candles) {
   return { r: regime, v: volatility };
 }
 
+// ── Trend detection (长周期趋势判断，影响仓位大小) ──
+function detectTrend() {
+  if (!gCandles || gCandles.length < 90) return { direction: 'neutral', strength: 0, longBias: 1.0, shortBias: 1.0 };
+  const len = gCandles.length;
+  // Use last 80 candles for trend (~20 hours of 15m data)
+  const lookback = Math.min(80, len);
+  const recent = gCandles.slice(len - lookback);
+
+  // Calculate MA20 and MA50 on close prices
+  const closes = recent.map(c => c.close);
+  let ma20 = 0, ma50 = 0;
+  for (let i = recent.length - 20; i < recent.length; i++) ma20 += closes[i];
+  ma20 /= 20;
+  if (recent.length >= 50) {
+    for (let i = recent.length - 50; i < recent.length; i++) ma50 += closes[i];
+    ma50 /= 50;
+  }
+
+  // Alligator alignment check
+  const mp = recent.map(c => (c.high + c.low) / 2);
+  function sma(arr, p) {
+    const r = [];
+    for (let i = 0; i < arr.length; i++) {
+      if (i < p) { r.push(NaN); continue; }
+      if (i === p) { let s = 0; for (let j = 0; j < p; j++) s += arr[i - j]; r.push(s / p); }
+      else r.push((r[i - 1] * (p - 1) + arr[i]) / p);
+    }
+    return r;
+  }
+  const jaw = sma(mp, 13), teeth = sma(mp, 8), lips = sma(mp, 5);
+  const last = recent.length - 1;
+  const jawVal = jaw[last], teethVal = teeth[last], lipsVal = lips[last];
+
+  // AO check
+  const aoFast = sma(mp, 5), aoSlow = sma(mp, 34);
+  const aoVal = (!isNaN(aoFast[last]) && !isNaN(aoSlow[last])) ? aoFast[last] - aoSlow[last] : 0;
+  const aoPrev = (!isNaN(aoFast[last - 3]) && !isNaN(aoSlow[last - 3])) ? aoFast[last - 3] - aoSlow[last - 3] : 0;
+
+  // Score trend direction
+  let bullScore = 0, bearScore = 0;
+
+  // MA alignment
+  if (ma20 > ma50 && ma50 > 0) bullScore += 2;
+  else if (ma20 < ma50 && ma50 > 0) bearScore += 2;
+
+  // Alligator alignment
+  if (!isNaN(lipsVal) && !isNaN(teethVal) && !isNaN(jawVal)) {
+    if (lipsVal > teethVal && teethVal > jawVal) bullScore += 3;
+    else if (lipsVal < teethVal && teethVal < jawVal) bearScore += 3;
+    // Price relative to alligator
+    const price = closes[last];
+    if (price > lipsVal) bullScore += 1;
+    else if (price < lipsVal) bearScore += 1;
+  }
+
+  // AO direction
+  if (!isNaN(aoVal)) {
+    if (aoVal > 0) bullScore += 1;
+    else if (aoVal < 0) bearScore += 1;
+    if (aoVal > aoPrev) bullScore += 1;
+    else if (aoVal < aoPrev) bearScore += 1;
+  }
+
+  // Determine bias
+  let direction, longBias, shortBias;
+  if (bullScore > bearScore + 2) {
+    direction = 'bull';
+    const str = Math.min(1, (bullScore - bearScore) / 6);
+    longBias = 1.0 + str * 0.5;   // max 1.5x for LONG in bullish
+    shortBias = 1.0 - str * 0.3;  // min 0.7x for SHORT in bullish
+  } else if (bearScore > bullScore + 2) {
+    direction = 'bear';
+    const str = Math.min(1, (bearScore - bullScore) / 6);
+    longBias = 1.0 - str * 0.3;   // min 0.7x for LONG in bearish
+    shortBias = 1.0 + str * 0.5;  // max 1.5x for SHORT in bearish
+  } else {
+    direction = 'neutral';
+    longBias = 1.0; shortBias = 1.0;
+  }
+
+  return {
+    direction,
+    strength: Math.abs(bullScore - bearScore) / 8,
+    longBias: +longBias.toFixed(2),
+    shortBias: +shortBias.toFixed(2),
+    details: 'bull=' + bullScore + ' bear=' + bearScore + ' MA20=' + ma20.toFixed(0) + '/MA50=' + ma50.toFixed(0) + ' AO=' + aoVal.toFixed(0)
+  };
+}
+
 // ── Open position (support pyramid adding) ──
 function openPosition(signal, candle, idx) {
   const s = gStrategy;
   const isShort = signal.type === 'SELL';
   const lev = s.params.leverage || 1;
-  const margin = gState.balance * s.params.positionSize;
+  // Trend-biased position size
+  const trend = detectTrend();
+  const bias = isShort ? trend.shortBias : trend.longBias;
+  const baseSize = s.params.positionSize || 0.2;
+  const adjustedSize = +(baseSize * bias).toFixed(3);
+  const margin = gState.balance * adjustedSize;
   const qty = (margin * lev) / candle.close;
   if (qty * candle.close < 10) { log('  Order too small, skip'); return; }
 
@@ -149,6 +243,7 @@ function openPosition(signal, candle, idx) {
     gState.totalTrades++;
     log('>>> 📈 加仓 #' + existingPos._layers + ' ' + (isShort ? '🔴 SHORT' : '🟢 LONG') + ' @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0));
     log('    总仓位:' + totalQty.toFixed(5) + ' BTC 均价:' + existingPos.entryPrice.toFixed(0) + ' 总保证金:$' + existingPos.margin.toFixed(0) + ' 层数:' + existingPos._layers);
+    log('    趋势:' + trend.direction + ' 偏置:' + (bias*100).toFixed(0) + '% ' + trend.details);
     saveState();
   } else {
     // 新建仓位
@@ -173,7 +268,8 @@ function openPosition(signal, candle, idx) {
     });
     gState.totalTrades++;
     log('>>> ' + (isShort ? '🔴 SHORT' : '🟢 LONG') + ' @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x');
-    log('    ' + signal.reason + ' [s' + signal.strength + ']');
+    log('    ' + signal.reason + ' [s' + signal.strength + '] 趋势:' + trend.direction + ' 仓位偏置:' + (bias*100).toFixed(0) + '%');
+    log('    ' + trend.details);
     saveState();
   }
 }
@@ -361,9 +457,12 @@ function printStatus() {
 
   // Multi-line status display
   const ts = now();
+  const trend = detectTrend();
+  const trendLabel = trend.direction === 'bull' ? '🟢 多头' : (trend.direction === 'bear' ? '🔴 空头' : '⚪ 震荡');
   console.log('');
   console.log('═══ ' + ts + ' #' + gRunCount + ' ═══');
   console.log('  账户: 余额$' + gState.balance.toFixed(2) + ' | 权益$' + equity.toFixed(2) + ' | 累计' + (totalPnl>=0?'+':'') + '$' + totalPnl.toFixed(2));
+  console.log('  趋势: ' + trendLabel + ' | 多头仓位' + (trend.longBias*100).toFixed(0) + '% | 空头仓位' + (trend.shortBias*100).toFixed(0) + '% | ' + trend.details);
   console.log('  历史: ' + gState.closedTrades.length + '笔平仓 | ' + gState.winningTrades + '赢/' + gState.losingTrades + '亏');
   if (pos) {
     const layers = pos._layers || 1;
@@ -389,6 +488,27 @@ function startHttpServer(port) {
   const server = http.createServer((req, res) => {
     try {
       let urlPath = req.url.split('?')[0];
+
+      // /reset endpoint
+      if (urlPath === '/reset') {
+        gState.balance = gState.initialCapital;
+        gState.position = null;
+        gState.orders = [];
+        gState.closedTrades = [];
+        gState.equityHistory = [];
+        gState.totalTrades = 0;
+        gState.winningTrades = 0;
+        gState.losingTrades = 0;
+        gState.orderIdSeq = 0;
+        gState.recentTrades = [];
+        gState.recentTradeFeedback = [];
+        gState.runCount = 0;
+        gCooldownTime = 0;
+        saveState();
+        res.writeHead(200, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'});
+        return res.end(JSON.stringify({ok:true,balance:gState.balance}));
+      }
+
       // Normalize: / or /btc_trading_demo.html → serve the HTML
       if (urlPath === '/' || urlPath === '') urlPath = '/btc_trading_demo.html';
       let filePath = path.join(__dirname, urlPath);
