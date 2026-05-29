@@ -438,6 +438,240 @@ async function scan() {
   } catch(e) {
     log('Scan error: ' + e.message);
   }
+  // Trigger AI evolution check after each scan
+  aiEvolve().catch(() => {});
+}
+
+// ═══════════════════════════════════════════════════════
+// ── AI-Driven Strategy Evolution (Claude API) ──
+// 触发条件: ≥3笔亏损 + 距上次进化≥1小时 + 有API Key
+// ═══════════════════════════════════════════════════════
+async function aiEvolve() {
+  const allFeedback = gState.recentTradeFeedback || [];
+  const losses = allFeedback.filter(t => t.pnl < 0).slice(-15);
+  if (losses.length < 3) return;
+
+  // Throttle: max once per hour
+  if (!gState._lastAIEvolve) gState._lastAIEvolve = 0;
+  if (Date.now() - gState._lastAIEvolve < 3600000) return;
+
+  // API key: env var or .api_key file
+  const apiKey = process.env.ANTHROPIC_API_KEY
+    || (fs.existsSync(path.join(__dirname, '.api_key'))
+        ? fs.readFileSync(path.join(__dirname, '.api_key'), 'utf8').trim() : null);
+  if (!apiKey) {
+    if (!gState._warnedNoAPIKey) {
+      log('AI进化: 未找到 ANTHROPIC_API_KEY 环境变量或 .api_key 文件，跳过AI分析');
+      log('  设置方法: set ANTHROPIC_API_KEY=sk-ant-...  或创建 .api_key 文件');
+      gState._warnedNoAPIKey = true;
+    }
+    return;
+  }
+  gState._warnedNoAPIKey = false;
+
+  log('');
+  log('══════ AI策略进化分析 ══════');
+  gState._lastAIEvolve = Date.now();
+
+  // Gather all trades for context
+  const recentTrades = allFeedback.slice(-30);
+  const wins = recentTrades.filter(t => t.pnl > 0);
+  const lossTrades = recentTrades.filter(t => t.pnl < 0);
+  const totalPnl = recentTrades.reduce((s, t) => s + (t.pnl || 0), 0);
+
+  // Build strategy snapshot
+  const strategySnapshot = {
+    name: gStrategy.name, version: gStrategy.version, generation: gStrategy.generation || 0,
+    params: gStrategy.params,
+    entryRules: gStrategy.entryRules.map(r => ({ id: r.id, type: r.type, weight: r.weight, enabled: r.enabled, params: r.params })),
+    exitRules: gStrategy.exitRules.map(r => ({ id: r.id, type: r.type, weight: r.weight, enabled: r.enabled })),
+    filterRules: gStrategy.filterRules.map(r => ({ id: r.id, type: r.type, weight: r.weight, enabled: r.enabled }))
+  };
+
+  // Trade detail for AI
+  const lossDetails = losses.slice(-10).map(t => ({
+    entryType: t.entryType, side: t.side || 'unknown',
+    pnl: '$' + (t.pnl || 0).toFixed(2), pnlPct: (t.pnlPct || 0).toFixed(1) + '%',
+    exitReason: t.reason, barsHeld: t.barsHeld || 0,
+    marketRegime: t.entryRegime || 'unknown', volatility: ((t.entryVolatility || 0) * 100).toFixed(2) + '%',
+    entryAO: (t.entryAO || 0).toFixed(0)
+  }));
+
+  const trend = detectTrend();
+  const marketCtx = {
+    trend: trend.direction, trendStrength: trend.strength.toFixed(2),
+    longBias: trend.longBias, shortBias: trend.shortBias,
+    volatility: (gRegime.v * 100).toFixed(2) + '%', regime: gRegime.r,
+    balance: '$' + gState.balance.toFixed(2), initialCapital: '$' + gState.initialCapital,
+    totalReturn: ((gState.balance - gState.initialCapital) / gState.initialCapital * 100).toFixed(1) + '%',
+    stats: { total: allFeedback.length, wins: wins.length, losses: lossTrades.length, totalPnl: '$' + totalPnl.toFixed(2) }
+  };
+
+  const prompt = `你是比特币交易策略优化专家。当前使用比尔·威廉姆斯混沌操作法（Alligator + AO + Fractals），200倍杠杆，15分钟K线，双向交易。
+
+## 策略配置
+\`\`\`json
+${JSON.stringify(strategySnapshot, null, 2)}
+\`\`\`
+
+## 市场环境
+\`\`\`json
+${JSON.stringify(marketCtx, null, 2)}
+\`\`\`
+
+## 亏损交易详情
+\`\`\`json
+${JSON.stringify(lossDetails, null, 2)}
+\`\`\`
+
+## 可用规则
+- 入场: fractal_breakout, alligator_align, lips_cross, ao_zero_cross, ma_cross
+- 离场: chaos_teeth_stop, chaos_lips_trail, chaos_ao_reverse, chaos_fractal_reverse, chaos_alligator_flip, time_exit
+- 过滤器: ao_direction, alligator_sleeping, trend_align, volume_ok, rsi_ok
+- 参数: jawPeriod(7-21), teethPeriod(5-13), lipsPeriod(3-8), aoFast(3-8), aoSlow(21-55), leverage(10-200), positionSize(0.05-0.5), minSignalScore(0.1-2.0), maxBars(20-120), maxPositions(1-5)
+
+请分析亏损原因并优化策略。返回纯JSON（不含markdown代码块标记）:
+
+{"analysis":"亏损核心原因一句话","paramChanges":{"param":value},"enableEntryRules":[],"disableEntryRules":[],"enableExitRules":[],"disableExitRules":[],"enableFilters":[],"disableFilters":[],"weightChanges":{"ruleType":0.8}}`;
+
+  try {
+    log('  正在调用Claude API分析...');
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2000,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      log('  API错误: ' + resp.status + ' ' + errText.slice(0, 100));
+      return;
+    }
+
+    const data = await resp.json();
+    const text = data.content[0].text.trim();
+    log('  AI响应: ' + text.slice(0, 200) + '...');
+
+    // Parse JSON from response (handle both raw JSON and code-fenced)
+    let jsonStr = text;
+    const m = text.match(/\{[\s\S]*\}/);
+    if (m) jsonStr = m[0];
+    const changes = JSON.parse(jsonStr);
+
+    log('');
+    log('  🤖 AI分析: ' + (changes.analysis || '(略)'));
+    let applied = 0;
+
+    // Apply param changes
+    if (changes.paramChanges) {
+      for (const k in changes.paramChanges) {
+        if (gStrategy.params.hasOwnProperty(k)) {
+          const old = gStrategy.params[k];
+          let v = changes.paramChanges[k];
+          // Clamp known params
+          const clamps = {
+            jawPeriod: [7, 21], teethPeriod: [5, 13], lipsPeriod: [3, 8],
+            aoFast: [3, 8], aoSlow: [21, 55], leverage: [10, 200],
+            positionSize: [0.05, 0.5], minSignalScore: [0.1, 2.0],
+            maxBars: [20, 120], maxPositions: [1, 5]
+          };
+          if (clamps[k]) v = Math.max(clamps[k][0], Math.min(clamps[k][1], v));
+          if (['jawPeriod','teethPeriod','lipsPeriod','aoFast','aoSlow','leverage','maxBars','maxPositions'].includes(k)) v = Math.round(v);
+          gStrategy.params[k] = typeof old === 'number' ? +v.toFixed(4) : v;
+          log('  参数 ' + k + ': ' + old + ' → ' + gStrategy.params[k]);
+          applied++;
+        }
+      }
+      // Ensure jaw > teeth > lips
+      if (gStrategy.params.jawPeriod <= gStrategy.params.teethPeriod) gStrategy.params.jawPeriod = gStrategy.params.teethPeriod + 2;
+      if (gStrategy.params.teethPeriod <= gStrategy.params.lipsPeriod) gStrategy.params.teethPeriod = gStrategy.params.lipsPeriod + 2;
+    }
+
+    // Apply rule changes
+    const ruleCategories = [
+      { name: 'entryRules', arr: gStrategy.entryRules },
+      { name: 'exitRules', arr: gStrategy.exitRules },
+      { name: 'filterRules', arr: gStrategy.filterRules }
+    ];
+
+    const enableList = [
+      ...(changes.enableEntryRules || []).map(t => ({ cat: 'entryRules', type: t })),
+      ...(changes.enableExitRules || []).map(t => ({ cat: 'exitRules', type: t })),
+      ...(changes.enableFilters || []).map(t => ({ cat: 'filterRules', type: t }))
+    ];
+    const disableList = [
+      ...(changes.disableEntryRules || []).map(t => ({ cat: 'entryRules', type: t })),
+      ...(changes.disableExitRules || []).map(t => ({ cat: 'exitRules', type: t })),
+      ...(changes.disableFilters || []).map(t => ({ cat: 'filterRules', type: t }))
+    ];
+
+    for (const ec of enableList) {
+      const cat = ruleCategories.find(c => c.name === ec.cat);
+      if (!cat) continue;
+      const rule = cat.arr.find(r => r.type === ec.type);
+      if (rule && !rule.enabled) { rule.enabled = true; log('  启用规则: ' + ec.cat + '/' + ec.type); applied++; }
+    }
+    for (const dc of disableList) {
+      const cat = ruleCategories.find(c => c.name === dc.cat);
+      if (!cat) continue;
+      const rule = cat.arr.find(r => r.type === dc.type);
+      if (rule && rule.enabled) { rule.enabled = false; log('  禁用规则: ' + dc.cat + '/' + dc.type); applied++; }
+    }
+
+    // Weight changes
+    if (changes.weightChanges) {
+      for (const k in changes.weightChanges) {
+        for (const cat of ruleCategories) {
+          const rule = cat.arr.find(r => r.type === k);
+          if (rule) {
+            const oldW = rule.weight;
+            rule.weight = +Math.max(0.1, Math.min(2.0, changes.weightChanges[k])).toFixed(2);
+            log('  权重 ' + cat.name + '/' + k + ': ' + oldW + ' → ' + rule.weight);
+            applied++;
+          }
+        }
+      }
+    }
+
+    if (applied > 0) {
+      gStrategy.generation = (gStrategy.generation || 0) + 1;
+      gStrategy.version = (parseFloat(gStrategy.version || '1.0') + 0.1).toFixed(1);
+      gStrategy.name = 'Evo-AI-' + new Date().toISOString().slice(0, 10);
+      gStrategy.description = 'AI优化: ' + (changes.analysis || '').slice(0, 80);
+      // Save evolved strategy to file
+      const output = {
+        name: gStrategy.name, version: gStrategy.version, description: gStrategy.description,
+        generation: gStrategy.generation, parentInfo: 'AI-evolved',
+        params: gStrategy.params, entryRules: gStrategy.entryRules,
+        exitRules: gStrategy.exitRules, filterRules: gStrategy.filterRules,
+        aiAnalysis: changes.analysis || '',
+        evolvedAt: new Date().toISOString(), evolutionReason: 'ai-' + losses.length + '-losses'
+      };
+      fs.writeFileSync(STRATEGY_FILE, JSON.stringify(output, null, 2));
+      // Persist in state
+      if (!gState.strategyHistory) gState.strategyHistory = [];
+      gState.strategyHistory.push({ name: gStrategy.name, version: gStrategy.version, deployedAt: Date.now(), reason: 'AI-' + losses.length + 'losses' });
+      saveState();
+      log('  ✅ AI进化完成: ' + gStrategy.name + ' v' + gStrategy.version + ' (gen ' + gStrategy.generation + ') ' + applied + '项改动');
+      log('  新策略已保存到: ' + STRATEGY_FILE);
+    } else {
+      log('  ⚠ AI未建议有效改动，保持原策略');
+    }
+    log('══════════════════════════');
+    log('');
+  } catch(e) {
+    log('  AI进化异常: ' + e.message);
+    log('══════════════════════════');
+    log('');
+  }
 }
 
 // ── Status display ──
