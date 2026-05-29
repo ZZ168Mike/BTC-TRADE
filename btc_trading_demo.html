@@ -949,15 +949,15 @@ function loadStrategyFromCache(){
 }
 
 function initStrategy(){
-  // Priority: localStorage cache > window.__loadedStrategy > default
-  var cached=loadStrategyFromCache();
-  if(cached){
-    currentStrategy=cached;
-    sLog('Loaded from cache: '+currentStrategy.name+' v'+currentStrategy.version+' (gen '+currentStrategy.generation+')');
-    updateStrategyUI();
-  } else if(window.__loadedStrategy){
+  // Priority: window.__loadedStrategy > localStorage cache > default
+  // (server-loaded strategy from btc_strategy_evolve.json overrides both later)
+  if(window.__loadedStrategy){
     currentStrategy=window.__loadedStrategy;
     sLog('Loaded: '+currentStrategy.name+' v'+currentStrategy.version);
+    updateStrategyUI();
+  } else if(loadStrategyFromCache()){
+    currentStrategy=loadStrategyFromCache();
+    sLog('From cache: '+currentStrategy.name+' v'+currentStrategy.version);
     updateStrategyUI();
   } else {
     document.getElementById('st-name').textContent='No Strategy';
@@ -1734,26 +1734,17 @@ async function autoLoadEvolved(){
     var evolved=createStrategy(json.name,json.version,json.description,json.params,json.entryRules,json.exitRules,json.filterRules);
     evolved.generation=json.generation||0;
     evolved.parentInfo=json.parentInfo||'server-evolution';
-    // Compare with localStorage cache — keep whichever is newer (higher generation)
-    var cached=loadStrategyFromCache();
-    if(cached && cached.generation >= evolved.generation){
-      addLog('[Server] Server gen '+evolved.generation+', cache gen '+cached.generation+' — keeping cache');
-      if(!currentStrategy || cached.generation >= (currentStrategy.generation||0)){
-        currentStrategy=cached;
-        window.__loadedStrategy=cached;
-        updateStrategyUI();
-      }
-    } else {
-      currentStrategy=evolved;
-      window.__loadedStrategy=evolved;
-      updateStrategyUI();
-      saveCurrentStrategyToCache(); // Sync cache with server
-      addLog('[Server] Strategy: '+evolved.name+' v'+evolved.version+' (gen '+evolved.generation+')');
-      if(json.backtest){
-        addLog('[Server] Backtest: +'+json.backtest.totalReturn+'% win '+json.backtest.winRate+'% trades '+json.backtest.closedTrades);
-      }
-      if(json.evolvedAt)addLog('[Server] Evolved at: '+json.evolvedAt);
+    // Always prefer server-loaded strategy (single source of truth)
+    // Old localStorage cache may be from incompatible strategy system
+    currentStrategy=evolved;
+    window.__loadedStrategy=evolved;
+    updateStrategyUI();
+    saveCurrentStrategyToCache(); // Sync cache with server
+    addLog('[Server] Strategy: '+evolved.name+' v'+evolved.version+' (gen '+evolved.generation+')');
+    if(json.backtest){
+      addLog('[Server] Backtest: +'+json.backtest.totalReturn+'% win '+json.backtest.winRate+'% trades '+json.backtest.closedTrades);
     }
+    if(json.evolvedAt)addLog('[Server] Evolved at: '+json.evolvedAt);
   }catch(e){/* not available */}
 }
 
