@@ -535,18 +535,21 @@ ${JSON.stringify(lossDetails, null, 2)}
 {"analysis":"亏损核心原因一句话","paramChanges":{"param":value},"enableEntryRules":[],"disableEntryRules":[],"enableExitRules":[],"disableExitRules":[],"enableFilters":[],"disableFilters":[],"weightChanges":{"ruleType":0.8}}`;
 
   try {
-    log('  正在调用Claude API分析...');
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    log('  正在调用DeepSeek V4 Pro分析...');
+    const resp = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        'Authorization': 'Bearer ' + apiKey
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'deepseek-chat',
         max_tokens: 2000,
-        messages: [{ role: 'user', content: prompt }]
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: '你是比特币交易策略优化专家。你只返回JSON，不含任何其他文本。' },
+          { role: 'user', content: prompt }
+        ]
       })
     });
 
@@ -557,7 +560,7 @@ ${JSON.stringify(lossDetails, null, 2)}
     }
 
     const data = await resp.json();
-    const text = data.content[0].text.trim();
+    const text = data.choices[0].message.content.trim();
     log('  AI响应: ' + text.slice(0, 200) + '...');
 
     // Parse JSON from response (handle both raw JSON and code-fenced)

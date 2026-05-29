@@ -1,54 +1,151 @@
 {
-  "name": "Chaos-Pure-v1",
-  "version": "1.0",
-  "description": "纯混沌操作法 — 无固定止盈止损，鳄鱼线+AO+分形结构离场，金字塔加仓",
-  "generation": 0,
-  "parentInfo": "Bill Williams Trading Chaos — Alligator + AO + Fractals",
+  "name": "Evo-AI-2026-05-29",
+  "version": "1.1",
+  "description": "AI优化: 在震荡行情中，AO动量反转信号频繁触发导致过早离场，同时MA5/10交叉入场信号与Alligator对齐信号在震荡中产生大量假突破，且AO零轴交叉入场信号在震荡",
+  "generation": 1,
+  "parentInfo": "AI-evolved",
   "params": {
-    "jawPeriod": 13,
-    "teethPeriod": 8,
-    "lipsPeriod": 5,
-    "aoFast": 5,
-    "aoSlow": 34,
-    "leverage": 200,
-    "positionSize": 0.2,
-    "maxPositions": 3,
+    "jawPeriod": 21,
+    "teethPeriod": 13,
+    "lipsPeriod": 8,
+    "aoFast": 8,
+    "aoSlow": 55,
+    "leverage": 50,
+    "positionSize": 0.1,
+    "maxPositions": 2,
     "addOnFractal": true,
     "addOnAOSaucer": true,
-    "maxBars": 80,
+    "maxBars": 120,
     "minSpread": 0.0003,
     "minVolumeRatio": 0.3,
     "rsiMax": 85,
     "rsiMin": 15,
-    "minSignalScore": 0.3
+    "minSignalScore": 0.8
   },
   "entryRules": [
-    { "id": "e1", "type": "fractal_breakout", "params": { "lookback": 2 }, "weight": 1.0, "enabled": true },
-    { "id": "e2", "type": "alligator_align", "params": {}, "weight": 1.0, "enabled": true },
-    { "id": "e3", "type": "lips_cross", "params": {}, "weight": 0.8, "enabled": true },
-    { "id": "e4", "type": "ao_zero_cross", "params": {}, "weight": 0.9, "enabled": true },
-    { "id": "e5", "type": "ma_cross", "params": { "fastPeriod": 5, "slowPeriod": 10 }, "weight": 0.6, "enabled": true }
+    {
+      "id": "e1",
+      "type": "fractal_breakout",
+      "params": {
+        "lookback": 2
+      },
+      "weight": 1.5,
+      "enabled": true
+    },
+    {
+      "id": "e2",
+      "type": "alligator_align",
+      "params": {},
+      "weight": 1.5,
+      "enabled": true
+    },
+    {
+      "id": "e3",
+      "type": "lips_cross",
+      "params": {},
+      "weight": 0.8,
+      "enabled": false
+    },
+    {
+      "id": "e4",
+      "type": "ao_zero_cross",
+      "params": {},
+      "weight": 0.9,
+      "enabled": false
+    },
+    {
+      "id": "e5",
+      "type": "ma_cross",
+      "params": {
+        "fastPeriod": 5,
+        "slowPeriod": 10
+      },
+      "weight": 0.6,
+      "enabled": false
+    }
   ],
   "exitRules": [
-    { "id": "x1", "type": "chaos_teeth_stop", "params": {}, "weight": 1.0, "enabled": true },
-    { "id": "x2", "type": "chaos_lips_trail", "params": {}, "weight": 0.8, "enabled": true },
-    { "id": "x3", "type": "chaos_ao_reverse", "params": {}, "weight": 1.0, "enabled": true },
-    { "id": "x4", "type": "chaos_fractal_reverse", "params": {}, "weight": 1.0, "enabled": true },
-    { "id": "x5", "type": "chaos_alligator_flip", "params": {}, "weight": 0.9, "enabled": true },
-    { "id": "x6", "type": "time_exit", "params": {}, "weight": 0.3, "enabled": true }
+    {
+      "id": "x1",
+      "type": "chaos_teeth_stop",
+      "params": {},
+      "weight": 1.5,
+      "enabled": true
+    },
+    {
+      "id": "x2",
+      "type": "chaos_lips_trail",
+      "params": {},
+      "weight": 0.8,
+      "enabled": false
+    },
+    {
+      "id": "x3",
+      "type": "chaos_ao_reverse",
+      "params": {},
+      "weight": 1,
+      "enabled": false
+    },
+    {
+      "id": "x4",
+      "type": "chaos_fractal_reverse",
+      "params": {},
+      "weight": 1.5,
+      "enabled": true
+    },
+    {
+      "id": "x5",
+      "type": "chaos_alligator_flip",
+      "params": {},
+      "weight": 1.5,
+      "enabled": true
+    },
+    {
+      "id": "x6",
+      "type": "time_exit",
+      "params": {},
+      "weight": 0.3,
+      "enabled": false
+    }
   ],
   "filterRules": [
-    { "id": "f1", "type": "ao_direction", "params": {}, "weight": 1.0, "enabled": false },
-    { "id": "f2", "type": "alligator_sleeping", "params": {}, "weight": 1.0, "enabled": false },
-    { "id": "f3", "type": "trend_align", "params": {}, "weight": 0.5, "enabled": false },
-    { "id": "f4", "type": "volume_ok", "params": {}, "weight": 0.3, "enabled": false },
-    { "id": "f5", "type": "rsi_ok", "params": {}, "weight": 0.4, "enabled": false }
+    {
+      "id": "f1",
+      "type": "ao_direction",
+      "params": {},
+      "weight": 1.5,
+      "enabled": true
+    },
+    {
+      "id": "f2",
+      "type": "alligator_sleeping",
+      "params": {},
+      "weight": 1.5,
+      "enabled": true
+    },
+    {
+      "id": "f3",
+      "type": "trend_align",
+      "params": {},
+      "weight": 1.5,
+      "enabled": true
+    },
+    {
+      "id": "f4",
+      "type": "volume_ok",
+      "params": {},
+      "weight": 1.5,
+      "enabled": true
+    },
+    {
+      "id": "f5",
+      "type": "rsi_ok",
+      "params": {},
+      "weight": 1.5,
+      "enabled": true
+    }
   ],
-  "evolutionLock": {
-    "minLossesRequired": 3,
-    "currentLosses": 0,
-    "locked": true,
-    "lockReason": "混沌操作法：实盘≥3笔亏损后才迭代。盈利→金字塔加仓扩大盈利；亏损→混沌信号止损离场。"
-  },
-  "savedAt": "2026-05-27T06:00:00"
+  "aiAnalysis": "在震荡行情中，AO动量反转信号频繁触发导致过早离场，同时MA5/10交叉入场信号与Alligator对齐信号在震荡中产生大量假突破，且AO零轴交叉入场信号在震荡中反复触发，造成连续亏损。",
+  "evolvedAt": "2026-05-29T09:08:42.284Z",
+  "evolutionReason": "ai-7-losses"
 }
