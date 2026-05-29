@@ -208,15 +208,13 @@ function detectTrend() {
 function openPosition(signal, candle, idx) {
   const s = gStrategy;
   const isShort = signal.type === 'SELL';
-  const lev = s.params.leverage || 1;
-  // Trend-biased position size
-  const trend = detectTrend();
-  const bias = isShort ? trend.shortBias : trend.longBias;
-  const baseSize = s.params.positionSize || 0.2;
-  const adjustedSize = +(baseSize * bias).toFixed(3);
-  const margin = gState.balance * adjustedSize;
+  const lev = s.params.leverage || 200;
+  // 5% of balance, capped at $100
+  const margin = Math.min(gState.balance * (s.params.positionSize || 0.05), s.params.maxMargin || 100);
   const qty = (margin * lev) / candle.close;
   if (qty * candle.close < 10) { log('  Order too small, skip'); return; }
+  // Check if entry type strength is enough for chaos entry
+  const minScore = signal.strength * 1.0; // at least strength 1
 
   const existingPos = gState.position;
   if (existingPos && existingPos.side === (isShort ? 'SHORT' : 'LONG')) {
@@ -243,7 +241,6 @@ function openPosition(signal, candle, idx) {
     gState.totalTrades++;
     log('>>> 📈 加仓 #' + existingPos._layers + ' ' + (isShort ? '🔴 SHORT' : '🟢 LONG') + ' @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0));
     log('    总仓位:' + totalQty.toFixed(5) + ' BTC 均价:' + existingPos.entryPrice.toFixed(0) + ' 总保证金:$' + existingPos.margin.toFixed(0) + ' 层数:' + existingPos._layers);
-    log('    趋势:' + trend.direction + ' 偏置:' + (bias*100).toFixed(0) + '% ' + trend.details);
     saveState();
   } else {
     // 新建仓位
@@ -268,8 +265,7 @@ function openPosition(signal, candle, idx) {
     });
     gState.totalTrades++;
     log('>>> ' + (isShort ? '🔴 SHORT' : '🟢 LONG') + ' @' + candle.close.toFixed(0) + ' x' + qty.toFixed(5) + ' margin=$' + margin.toFixed(0) + ' ' + lev + 'x');
-    log('    ' + signal.reason + ' [s' + signal.strength + '] 趋势:' + trend.direction + ' 仓位偏置:' + (bias*100).toFixed(0) + '%');
-    log('    ' + trend.details);
+    log('    ' + signal.reason + ' [s' + signal.strength + '] 保证金上限:$' + (s.params.maxMargin||100));
     saveState();
   }
 }
@@ -347,25 +343,18 @@ function checkExit(candle) {
   return null;
 }
 
-// ── Check if should add to position (混沌加仓) ──
+// ── Check if should add to position (AC三步加仓法) ──
 function checkAddPosition(signal, candle, idx) {
   const pos = gState.position;
   if (!pos) return false;
   const s = gStrategy;
-  const maxLayers = s.params.maxPositions || 3;
+  const maxLayers = s.params.maxLayers || 3;
   if ((pos._layers || 1) >= maxLayers) return false;
-  if (!s.params.addOnFractal && !s.params.addOnAOSaucer) return false;
 
-  // Must be same direction as existing position
-  const isShort = pos.side === 'SHORT';
-  if ((isShort && signal.type !== 'SELL') || (!isShort && signal.type !== 'BUY')) return false;
-
-  // 1. Add on fractal breakout continuation (strength 2+)
-  if (s.params.addOnFractal && signal.reason.indexOf('Fractal') >= 0 && signal.strength >= 2) return true;
-
-  // 2. Add on AO confirming momentum (AO zero cross or alligator alignment)
-  if (s.params.addOnAOSaucer && (signal.reason.indexOf('AO') >= 0 || signal.reason.indexOf('Alligator') >= 0) && signal.strength >= 1) return true;
-
+  // Use strategy's AC-based add signal check
+  if (s.checkACAdd && gCtx) {
+    return s.checkACAdd(gCandles, idx, pos, gCtx);
+  }
   return false;
 }
 
@@ -792,9 +781,9 @@ async function main() {
 
   console.log('');
   console.log('╔══════════════════════════════════════════╗');
-  console.log('║   BTC 实时交易 — 纯混沌操作法            ║');
-  console.log('║   鳄鱼线+AO+分形  结构离场 金字塔加仓    ║');
-  console.log('║   每30秒扫描Binance 15分钟K线            ║');
+  console.log('║   BTC 实时交易 — 证券混沌操作法          ║');
+  console.log('║   鳄鱼线+分形+AO+AC 四大工具             ║');
+  console.log('║   200x 5%仓位 $100上限  每30秒扫描       ║');
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
 

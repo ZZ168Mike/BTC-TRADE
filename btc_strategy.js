@@ -1,1031 +1,678 @@
-// ===== BTC Self-Evolving Trading Strategy =====
-// Rule-based architecture with genetic algorithm self-evolution
-// Entry/Exit/Filter rules compose, mutate, crossover, and adapt
-// Load via Strategy panel "Load" button in btc_trading_demo.html
+// ===== BTC Trading Strategy — Bill Williams Trading Chaos =====
+// 纯《证券混沌操作法》实现：鳄鱼线+分形+AO+AC 四大工具
+// 开仓/加仓/止损/止盈完全遵从原著规则
 
-// ---- Indicator helpers (self-contained) ----
+// ---- Indicators ----
 function _smma(data, period) {
-  var result = [], len = data.length;
-  for (var i = 0; i < len; i++) {
-    if (i < period) { result.push(NaN); continue; }
-    if (i === period) {
-      var sum = 0;
-      for (var j = 0; j < period; j++) sum += data[i - j];
-      result.push(sum / period);
-    } else {
-      result.push((result[i - 1] * (period - 1) + data[i]) / period);
-    }
+  var result=[],len=data.length;
+  for(var i=0;i<len;i++){
+    if(i<period){result.push(NaN);continue}
+    if(i===period){var s=0;for(var j=0;j<period;j++)s+=data[i-j];result.push(s/period)}
+    else result.push((result[i-1]*(period-1)+data[i])/period);
   }
   return result;
 }
-function _sma(data, period) {
-  var result = [], len = data.length, sum = 0;
-  for (var i = 0; i < len; i++) {
-    if (i < period - 1) {
-      result.push(NaN);
-      sum += data[i];
-      continue;
-    }
-    if (i === period - 1) {
-      sum += data[i];
-      result.push(sum / period);
-    } else {
-      sum = sum - data[i - period] + data[i];
-      result.push(sum / period);
-    }
+function _sma(data,period){
+  var result=[],len=data.length,sum=0;
+  for(var i=0;i<len;i++){
+    if(i<period-1){result.push(NaN);sum+=data[i];continue}
+    if(i===period-1){sum+=data[i];result.push(sum/period)}
+    else{sum=sum-data[i-period]+data[i];result.push(sum/period)}
   }
   return result;
 }
-function _calcRSI(closes, period) {
-  period = period || 14;
-  var gains = [], losses = [], rsi = [];
-  for (var i = 1; i < closes.length; i++) {
-    var d = closes[i] - closes[i - 1];
-    gains.push(d > 0 ? d : 0); losses.push(d < 0 ? -d : 0);
-  }
-  var ag = 0, al = 0;
-  for (var j = 0; j < period; j++) { ag += gains[j]; al += losses[j]; }
-  ag /= period; al /= period;
-  for (var k = 0; k < closes.length; k++) {
-    if (k < period) { rsi.push(NaN); continue; }
-    if (k === period) { rsi.push(al === 0 ? 100 : 100 - 100 / (1 + ag / al)); continue; }
-    var idx = k - 1;
-    ag = (ag * (period - 1) + gains[idx]) / period;
-    al = (al * (period - 1) + losses[idx]) / period;
-    rsi.push(al === 0 ? 100 : 100 - 100 / (1 + ag / al));
+function _calcRSI(closes,period){
+  period=period||14;
+  var gains=[],losses=[],rsi=[];
+  for(var i=1;i<closes.length;i++){var d=closes[i]-closes[i-1];gains.push(d>0?d:0);losses.push(d<0?-d:0)}
+  var ag=0,al=0;
+  for(var j=0;j<period;j++){ag+=gains[j];al+=losses[j]}
+  ag/=period;al/=period;
+  for(var k=0;k<closes.length;k++){
+    if(k<period){rsi.push(NaN);continue}
+    if(k===period){rsi.push(al===0?100:100-100/(1+ag/al));continue}
+    var idx=k-1;
+    ag=(ag*(period-1)+gains[idx])/period;al=(al*(period-1)+losses[idx])/period;
+    rsi.push(al===0?100:100-100/(1+ag/al));
   }
   return rsi;
 }
 
-// ---- Rule templates (evaluation functions keyed by type) ----
-// Each rule: { id, type, category:'entry'|'exit'|'filter', enabled, weight, params:{...} }
+// ---- Rule Evaluators ----
+var RuleEvaluators={
 
-var RuleEvaluators = {
-  // === ENTRY rules === return {type:'BUY'|'SELL', strength:1-3, reason} or null
-  'fractal_breakout': function(candles, i, rule, ctx) {
-    var p = rule.params, price = candles[i].close;
-    // Check fractal in last N bars
-    var foundTop = false, foundBot = false;
-    for (var k = 0; k <= p.lookback; k++) {
-      var idx = i - k; if (idx < 5 || idx >= candles.length - 5) continue;
-      var h = candles[idx].high, l = candles[idx].low;
-      if (h > candles[idx-1].high && h > candles[idx-2].high && h > candles[idx+1].high && h > candles[idx+2].high) foundTop = true;
-      if (l < candles[idx-1].low && l < candles[idx-2].low && l < candles[idx+1].low && l < candles[idx+2].low) foundBot = true;
+  // ═══════════ ENTRY — 混沌入场信号 ═══════════
+  'fractal_breakout':function(candles,i,rule,ctx){
+    // 分形突破入场（5根K线分形，必须高于/低于牙齿线）
+    var p=rule.params||{},lookback=p.lookback||3,price=candles[i].close;
+    if(i<5)return null;
+    // Find recent fractal
+    var buyFractal=null,sellFractal=null;
+    for(var k=lookback;k>=1;k--){
+      var idx=i-k;if(idx<2||idx>=candles.length-2)continue;
+      var h=candles[idx].high,l=candles[idx].low;
+      var isBuyFractal=h>candles[idx-1].high&&h>candles[idx-2].high&&h>candles[idx+1].high&&h>candles[idx+2].high;
+      var isSellFractal=l<candles[idx-1].low&&l<candles[idx-2].low&&l<candles[idx+1].low&&l<candles[idx+2].low;
+      if(isBuyFractal&&!buyFractal)buyFractal={idx:idx,price:h};
+      if(isSellFractal&&!sellFractal)sellFractal={idx:idx,price:l};
     }
-    if (foundTop && price > ctx.jaw[i] && !isNaN(ctx.jaw[i]) && ctx.ao[i] > 0 && ctx.ao[i] > (ctx.ao[i-1]||0)) {
-      return { type: 'BUY', strength: 3, reason: 'Fractal breakout above Jaw + AO rising' };
+    // Buy: fractal above teeth + price breaking above fractal + AO>0
+    if(buyFractal&&!isNaN(ctx.teeth[buyFractal.idx])&&buyFractal.price>ctx.teeth[buyFractal.idx]){
+      if(price>buyFractal.price&&candles[i-1].close<=buyFractal.price&&ctx.ao[i]>0)
+        return{type:'BUY',strength:3,reason:'分形突破做多 @'+buyFractal.price.toFixed(0)};
     }
-    if (foundBot && price < ctx.jaw[i] && !isNaN(ctx.jaw[i]) && ctx.ao[i] < 0 && ctx.ao[i] < (ctx.ao[i-1]||0)) {
-      return { type: 'SELL', strength: 3, reason: 'Fractal breakdown below Jaw + AO falling' };
-    }
-    return null;
-  },
-  'alligator_align': function(candles, i, rule, ctx) {
-    var price = candles[i].close;
-    var jaw = ctx.jaw[i], teeth = ctx.teeth[i], lips = ctx.lips[i];
-    if (isNaN(jaw) || isNaN(teeth) || isNaN(lips)) return null;
-    // Bullish: lips > teeth > jaw, price above lips
-    if (lips > teeth && teeth > jaw && price > lips) {
-      return { type: 'BUY', strength: 2, reason: 'Alligator bullish aligned + price above' };
-    }
-    // Bearish: lips < teeth < jaw, price below lips
-    if (lips < teeth && teeth < jaw && price < lips) {
-      return { type: 'SELL', strength: 2, reason: 'Alligator bearish aligned + price below' };
-    }
-    return null;
-  },
-  'lips_cross': function(candles, i, rule, ctx) {
-    var price = candles[i].close, prevClose = candles[i-1].close;
-    var lips = ctx.lips[i], prevLips = ctx.lips[i-1];
-    if (isNaN(lips) || isNaN(prevLips)) return null;
-    if (prevClose <= prevLips && price > lips) {
-      return { type: 'BUY', strength: 1, reason: 'Price crossing above Lips' };
-    }
-    if (prevClose >= prevLips && price < lips) {
-      return { type: 'SELL', strength: 1, reason: 'Price crossing below Lips' };
-    }
-    return null;
-  },
-  'ao_zero_cross': function(candles, i, rule, ctx) {
-    var ao = ctx.ao[i], aoPrev = ctx.ao[i-1] || NaN;
-    if (isNaN(ao) || isNaN(aoPrev)) return null;
-    if (aoPrev <= 0 && ao > 0) return { type: 'BUY', strength: 2, reason: 'AO crossing above zero' };
-    if (aoPrev >= 0 && ao < 0) return { type: 'SELL', strength: 2, reason: 'AO crossing below zero' };
-    return null;
-  },
-  'ma_cross': function(candles, i, rule, ctx) {
-    var p = rule.params;
-    var closes = candles.map(function(c) { return c.close; });
-    var fast = _sma(closes, p.fastPeriod), slow = _sma(closes, p.slowPeriod);
-    if (isNaN(fast[i]) || isNaN(slow[i]) || isNaN(fast[i-1]) || isNaN(slow[i-1])) return null;
-    if (fast[i-1] <= slow[i-1] && fast[i] > slow[i]) {
-      return { type: 'BUY', strength: 2, reason: 'MA'+p.fastPeriod+' crosses above MA'+p.slowPeriod };
-    }
-    if (fast[i-1] >= slow[i-1] && fast[i] < slow[i]) {
-      return { type: 'SELL', strength: 2, reason: 'MA'+p.fastPeriod+' crosses below MA'+p.slowPeriod };
+    // Sell: fractal below teeth + price breaking below fractal + AO<0
+    if(sellFractal&&!isNaN(ctx.teeth[sellFractal.idx])&&sellFractal.price<ctx.teeth[sellFractal.idx]){
+      if(price<sellFractal.price&&candles[i-1].close>=sellFractal.price&&ctx.ao[i]<0)
+        return{type:'SELL',strength:3,reason:'分形突破做空 @'+sellFractal.price.toFixed(0)};
     }
     return null;
   },
 
-  // ═══════════════════════════════════════════════════════
-  // === EXIT rules — 纯混沌操作法离场 ===
-  // 不使用固定止盈止损百分比，完全基于市场结构
-  // 支持 LONG (BUY入场) 和 SHORT (SELL入场) 双向
-  // ═══════════════════════════════════════════════════════
-  // position.side: 'LONG' (BUY入场) 或 'SHORT' (SELL入场)，默认 'LONG'
-  'chaos_teeth_stop': function(candles, i, position, ctx) {
-    // 价格反向穿越鳄鱼线牙齿 → 离场（混沌操作法主要止损）
-    var price = candles[i].close, prevPrice = candles[i-1].close;
-    var teeth = ctx.teeth[i], prevTeeth = ctx.teeth[i-1];
-    if (isNaN(teeth) || isNaN(prevTeeth)) return null;
-    var isLong = !position.side || position.side !== 'SHORT';
-    if (isLong) {
-      if (prevPrice >= prevTeeth && price < teeth) return 'Chaos止损: 价格跌破牙齿线';
-    } else {
-      if (prevPrice <= prevTeeth && price > teeth) return 'Chaos止损: 价格升穿牙齿线';
-    }
+  'ao_saucer':function(candles,i,rule,ctx){
+    // AO碟型信号（零轴上方：红→绿→红=买入；零轴下方：绿→红→绿=卖出）
+    var ao=ctx.ao;
+    if(i<5||isNaN(ao[i])||isNaN(ao[i-1])||isNaN(ao[i-2])||isNaN(ao[i-3]))return null;
+    // Need 4 bars: bar[i-3], bar[i-2], bar[i-1], bar[i]
+    var b0=ao[i],b1=ao[i-1],b2=ao[i-2],b3=ao[i-3];
+    // Buy saucer (above zero): red(b3) → green(b2) → red(b1) → green(b0) after red
+    // Simplified: bar-1 was negative (red), bar-2 was positive (green), bar-3 was negative (red), all above zero
+    if(b3<0&&b2>0&&b1<0&&b0>0&&b3>ctx.ao[i-4]&&b0>b1)
+      return{type:'BUY',strength:2,reason:'AO碟型买入信号'};
+    // Sell saucer (below zero)
+    if(b3>0&&b2<0&&b1>0&&b0<0&&b3<ctx.ao[i-4]&&b0<b1)
+      return{type:'SELL',strength:2,reason:'AO碟型卖出信号'};
+    // Simplified saucer (3 bar): green→red→green above zero = buy
+    if(b2>0&&b1<0&&b0>0&&ao[i-2]>0&&b0>b1)
+      return{type:'BUY',strength:2,reason:'AO碟型买入(简)'};
+    if(b2<0&&b1>0&&b0<0&&ao[i-2]<0&&b0<b1)
+      return{type:'SELL',strength:2,reason:'AO碟型卖出(简)'};
     return null;
-  },
-  'chaos_lips_trail': function(candles, i, position, ctx) {
-    // 价格反向穿越嘴唇 → 更紧的移动止损（趋势加速时用）
-    var price = candles[i].close, prevPrice = candles[i-1].close;
-    var lips = ctx.lips[i], prevLips = ctx.lips[i-1];
-    if (isNaN(lips) || isNaN(prevLips)) return null;
-    var isLong = !position.side || position.side !== 'SHORT';
-    if (isLong) {
-      if (prevPrice >= prevLips && price < lips) return 'Chaos移动止盈: 价格跌破嘴唇线';
-    } else {
-      if (prevPrice <= prevLips && price > lips) return 'Chaos移动止盈: 价格升穿嘴唇线';
-    }
-    return null;
-  },
-  'chaos_ao_reverse': function(candles, i, position, ctx) {
-    // AO连续3根K线逆转向 → 动量衰竭离场
-    var ao = ctx.ao;
-    if (i < 3 || isNaN(ao[i]) || isNaN(ao[i-1]) || isNaN(ao[i-2])) return null;
-    var isLong = !position.side || position.side !== 'SHORT';
-    if (isLong) {
-      if (ao[i] < ao[i-1] && ao[i-1] < ao[i-2]) return 'Chaos动量反转: AO连续3根下降';
-    } else {
-      if (ao[i] > ao[i-1] && ao[i-1] > ao[i-2]) return 'Chaos动量反转: AO连续3根上升';
-    }
-    return null;
-  },
-  'chaos_fractal_reverse': function(candles, i, position, ctx) {
-    // 反向分形突破信号（力度3级）→ 反转离场
-    var isLong = !position.side || position.side !== 'SHORT';
-    var oppositeType = isLong ? 'SELL' : 'BUY';
-    for (var r = 0; r < (ctx.entryRules||[]).length; r++) {
-      var rule = ctx.entryRules[r];
-      if (!rule.enabled || rule.weight <= 0) continue;
-      var sig = RuleEvaluators[rule.type] ? RuleEvaluators[rule.type](candles, i, rule, ctx) : null;
-      if (sig && sig.type === oppositeType && sig.strength >= 3) {
-        return 'Chaos反转: ' + sig.reason;
-      }
-    }
-    return null;
-  },
-  'chaos_alligator_flip': function(candles, i, position, ctx) {
-    // 鳄鱼线排列方向翻转 → 趋势改变离场
-    var jaw = ctx.jaw[i], teeth = ctx.teeth[i], lips = ctx.lips[i];
-    var prevJaw = ctx.jaw[i-1], prevTeeth = ctx.teeth[i-1], prevLips = ctx.lips[i-1];
-    if (isNaN(jaw) || isNaN(teeth) || isNaN(lips) || isNaN(prevJaw) || isNaN(prevTeeth) || isNaN(prevLips)) return null;
-    var isLong = !position.side || position.side !== 'SHORT';
-    // Check if alligator alignment flips
-    var wasBullish = prevLips > prevTeeth && prevTeeth > prevJaw;
-    var wasBearish = prevLips < prevTeeth && prevTeeth < prevJaw;
-    var isBullish = lips > teeth && teeth > jaw;
-    var isBearish = lips < teeth && teeth < jaw;
-    if (isLong && wasBullish && isBearish) return 'Chaos趋势翻转: 鳄鱼线多转空';
-    if (!isLong && wasBearish && isBullish) return 'Chaos趋势翻转: 鳄鱼线空转多';
-    return null;
-  },
-  'time_exit': function(candles, i, position, ctx) {
-    var barsHeld = i - (position.entryIndex || position._entryIdx || 0);
-    var maxBars = ctx.params.maxBars || 80;
-    return (barsHeld >= maxBars) ? '超时离场 (' + barsHeld + '根K线)' : null;
   },
 
-  // === FILTER rules === return true (pass) / false (block)
-  'ao_direction': function(candles, i, signal, ctx) {
-    if (isNaN(ctx.ao[i])) return false;
-    if (signal.type === 'BUY') return ctx.ao[i] > 0;
-    return ctx.ao[i] < 0;
+  'ao_twin_peaks':function(candles,i,rule,ctx){
+    // AO双峰信号
+    var ao=ctx.ao;if(i<6)return null;
+    // Search back ~20 bars for previous peak
+    var isBuy=ao[i]>0&&ao[i-1]<=0; // Just crossed above zero → look for twin peaks below zero
+    var isSell=ao[i]<0&&ao[i-1]>=0; // Just crossed below zero
+    if(!isBuy&&!isSell)return null;
+    // Find last peak below zero (for buy) or above zero (for sell)
+    var peakVal=0,peakIdx=-1;
+    for(var k=i-3;k>Math.max(0,i-25);k--){
+      if(isBuy&&ao[k]<0&&ao[k]>ao[k-1]&&ao[k]>ao[k+1]){if(ao[k]>peakVal){peakVal=ao[k];peakIdx=k}}
+      if(isSell&&ao[k]>0&&ao[k]<ao[k-1]&&ao[k]<ao[k+1]){if(ao[k]<peakVal||peakVal===0){peakVal=ao[k];peakIdx=k}}
+    }
+    if(peakIdx<0)return null;
+    if(isBuy&&ao[i]>peakVal)return{type:'BUY',strength:2,reason:'AO双峰买入'};
+    if(isSell&&ao[i]<peakVal)return{type:'SELL',strength:2,reason:'AO双峰卖出'};
+    return null;
   },
-  'alligator_sleeping': function(candles, i, signal, ctx) {
-    var jaw = ctx.jaw[i], teeth = ctx.teeth[i], lips = ctx.lips[i];
-    if (isNaN(jaw) || isNaN(teeth) || isNaN(lips)) return false;
-    var spread = Math.abs(Math.max(jaw, teeth, lips) - Math.min(jaw, teeth, lips)) / candles[i].close;
-    return spread >= ctx.params.minSpread;
+
+  'ao_zero_cross':function(candles,i,rule,ctx){
+    var ao=ctx.ao[i],aoPrev=ctx.ao[i-1]||NaN;
+    if(isNaN(ao)||isNaN(aoPrev))return null;
+    if(aoPrev<=0&&ao>0)return{type:'BUY',strength:1,reason:'AO穿越零轴向上'};
+    if(aoPrev>=0&&ao<0)return{type:'SELL',strength:1,reason:'AO穿越零轴向下'};
+    return null;
   },
-  'trend_align': function(candles, i, signal, ctx) {
-    if (!ctx._getMA10) return true;
-    var ma10=ctx._getMA10(),ma20=ctx._getMA20();
-    if (isNaN(ma10[i])||isNaN(ma20[i])) return true;
-    if (signal.type==='BUY') return ma10[i]>ma20[i];
-    return ma10[i]<ma20[i];
+
+  'alligator_bite':function(candles,i,rule,ctx){
+    // 鳄鱼嘴张开 + 价格在嘴外 = 趋势确认
+    var jaw=ctx.jaw[i],teeth=ctx.teeth[i],lips=ctx.lips[i];
+    if(isNaN(jaw)||isNaN(teeth)||isNaN(lips))return null;
+    var price=candles[i].close;
+    var spread=Math.abs(lips-jaw)/price;
+    if(spread<0.0003)return null; // 嘴没张开
+    if(lips>teeth&&teeth>jaw&&price>lips)
+      return{type:'BUY',strength:2,reason:'鳄鱼多头排列+价格在嘴唇上方'};
+    if(lips<teeth&&teeth<jaw&&price<lips)
+      return{type:'SELL',strength:2,reason:'鳄鱼空头排列+价格在嘴唇下方'};
+    return null;
   },
-  'volume_ok': function(candles, i, signal, ctx) {
-    var avg20=ctx._getAvgVol20?ctx._getAvgVol20():null;
-    if(!avg20||isNaN(avg20[i])) return true;
-    return candles[i].volume>=avg20[i]*ctx.params.minVolumeRatio;
+
+  // ═══════════ EXIT — 混沌离场规则 ═══════════
+  'fractal_stop':function(candles,i,position,ctx){
+    // 分形止损：做多止损在最近买入分形低点下方，做空止损在最近卖出分形高点上方
+    if(!position||i<5)return null;
+    var isLong=!position.side||position.side!=='SHORT';
+    var recentFractalLow=Infinity,recentFractalHigh=-Infinity;
+    for(var k=1;k<=20;k++){
+      var idx=i-k;if(idx<2||idx>=candles.length-2)continue;
+      var h=candles[idx].high,l=candles[idx].low;
+      if(h>candles[idx-1].high&&h>candles[idx-2].high&&h>candles[idx+1].high&&h>candles[idx+2].high)
+        recentFractalHigh=Math.min(recentFractalHigh,h);
+      if(l<candles[idx-1].low&&l<candles[idx-2].low&&l<candles[idx+1].low&&l<candles[idx+2].low)
+        recentFractalLow=Math.max(recentFractalLow,l);
+    }
+    if(isLong&&recentFractalLow<Infinity&&candles[i].close<recentFractalLow)
+      return'分形止损: 跌破前分形低点';
+    if(!isLong&&recentFractalHigh>-Infinity&&candles[i].close>recentFractalHigh)
+      return'分形止损: 升穿前分形高点';
+    return null;
   },
-  'rsi_ok': function(candles, i, signal, ctx) {
-    if(!ctx._getRSI14) return true;
+
+  'lips_stop':function(candles,i,position,ctx){
+    // 鳄鱼嘴唇止损：价格反向穿越嘴唇线
+    var price=candles[i].close,prevPrice=candles[i-1].close;
+    var lips=ctx.lips[i],prevLips=ctx.lips[i-1];
+    if(isNaN(lips)||isNaN(prevLips))return null;
+    var isLong=!position.side||position.side!=='SHORT';
+    if(isLong&&prevPrice>=prevLips&&price<lips)return'嘴唇止损: 价格跌破唇线';
+    if(!isLong&&prevPrice<=prevLips&&price>lips)return'嘴唇止损: 价格升穿唇线';
+    return null;
+  },
+
+  'ao_flip':function(candles,i,position,ctx){
+    // AO方向翻转：多仓时AO从正变负（或连续3根下降），空仓反之
+    var ao=ctx.ao;if(i<3)return null;
+    var isLong=!position.side||position.side!=='SHORT';
+    if(isLong&&ao[i]<0&&ao[i-1]>=0)return'AO翻转向下-离场';
+    if(!isLong&&ao[i]>0&&ao[i-1]<=0)return'AO翻转向上-离场';
+    // 3 bar AO reversal
+    if(isLong&&ao[i]<ao[i-1]&&ao[i-1]<ao[i-2]&&ao[i-2]<ao[i-3])return'AO连续4根下降-动量衰竭';
+    if(!isLong&&ao[i]>ao[i-1]&&ao[i-1]>ao[i-2]&&ao[i-2]>ao[i-3])return'AO连续4根上升-动量衰竭';
+    return null;
+  },
+
+  'opposite_fractal':function(candles,i,position,ctx){
+    // 反向分形突破 → 趋势反转，全部离场
+    if(!position||i<5)return null;
+    var isLong=!position.side||position.side!=='SHORT';
+    var price=candles[i].close;
+    for(var k=1;k<=5;k++){
+      var idx=i-k;if(idx<2||idx>=candles.length-2)continue;
+      var h=candles[idx].high,l=candles[idx].low;
+      var buyFract=h>candles[idx-1].high&&h>candles[idx-2].high&&h>candles[idx+1].high&&h>candles[idx+2].high;
+      var sellFract=l<candles[idx-1].low&&l<candles[idx-2].low&&l<candles[idx+1].low&&l<candles[idx+2].low;
+      if(!isLong&&buyFract&&price>h&&!isNaN(ctx.teeth[idx])&&h>ctx.teeth[idx])
+        return'反向分形: 多头突破-空仓离场';
+      if(isLong&&sellFract&&price<l&&!isNaN(ctx.teeth[idx])&&l<ctx.teeth[idx])
+        return'反向分形: 空头突破-多仓离场';
+    }
+    return null;
+  },
+
+  'time_exit':function(candles,i,position,ctx){
+    var barsHeld=i-(position.entryIndex||position._entryIdx||0);
+    return(barsHeld>=ctx.params.maxBars)?'超时离场('+barsHeld+'根K线)':null;
+  },
+
+  // ═══════════ FILTERS ═══════════
+  'alligator_awake':function(candles,i,signal,ctx){
+    // 鳄鱼必须醒着（嘴张开），缠绕则不交易
+    var jaw=ctx.jaw[i],teeth=ctx.teeth[i],lips=ctx.lips[i];
+    if(isNaN(jaw)||isNaN(teeth)||isNaN(lips))return false;
+    var spread=Math.abs(Math.max(jaw,teeth,lips)-Math.min(jaw,teeth,lips))/candles[i].close;
+    return spread>=0.0003; // 0.03% spread minimum
+  },
+
+  'ao_confirm':function(candles,i,signal,ctx){
+    // AO必须确认方向
+    if(isNaN(ctx.ao[i]))return false;
+    if(signal.type==='BUY')return ctx.ao[i]>0;
+    return ctx.ao[i]<0;
+  },
+
+  'ac_confirm':function(candles,i,signal,ctx){
+    // AC指标确认
+    if(!ctx.ac||isNaN(ctx.ac[i]))return true;
+    // AC与AO同向
+    if(signal.type==='BUY')return ctx.ac[i]>0||ctx.ac[i]>ctx.ac[i-1];
+    return ctx.ac[i]<0||ctx.ac[i]<ctx.ac[i-1];
+  },
+
+  'volume_ok':function(candles,i,signal,ctx){
+    if(!ctx._getAvgVol20||isNaN(ctx._getAvgVol20()[i]))return true;
+    return candles[i].volume>=ctx._getAvgVol20()[i]*0.5;
+  },
+
+  'rsi_ok':function(candles,i,signal,ctx){
+    if(!ctx._getRSI14||isNaN(ctx._getRSI14()[i]))return true;
     var rsi=ctx._getRSI14();
-    if(isNaN(rsi[i])) return true;
-    if(signal.type==='BUY') return rsi[i]<ctx.params.rsiMax;
-    return rsi[i]>ctx.params.rsiMin;
+    if(signal.type==='BUY')return rsi[i]<90;
+    return rsi[i]>10;
   }
 };
 
-// Available rule templates for generating new rules during evolution
-var RuleTemplates = {
-  entry: [
-    { type: 'fractal_breakout', params: { lookback: 2 }, weight: 1.0, enabled: true },
-    { type: 'alligator_align', params: {}, weight: 1.0, enabled: true },
-    { type: 'lips_cross', params: {}, weight: 0.8, enabled: true },
-    { type: 'ao_zero_cross', params: {}, weight: 0.9, enabled: true },
-    { type: 'ma_cross', params: { fastPeriod: 5, slowPeriod: 10 }, weight: 0.6, enabled: true }
+// ---- Rule Templates ----
+var RuleTemplates={
+  entry:[
+    {type:'fractal_breakout',params:{lookback:3},weight:1.0,enabled:true},
+    {type:'ao_saucer',params:{},weight:0.8,enabled:true},
+    {type:'ao_twin_peaks',params:{},weight:0.7,enabled:true},
+    {type:'ao_zero_cross',params:{},weight:0.5,enabled:true},
+    {type:'alligator_bite',params:{},weight:0.6,enabled:true}
   ],
-  exit: [
-    { type: 'chaos_teeth_stop', params: {}, weight: 1.0, enabled: true },
-    { type: 'chaos_lips_trail', params: {}, weight: 0.8, enabled: true },
-    { type: 'chaos_ao_reverse', params: {}, weight: 1.0, enabled: true },
-    { type: 'chaos_fractal_reverse', params: {}, weight: 1.0, enabled: true },
-    { type: 'chaos_alligator_flip', params: {}, weight: 0.9, enabled: true },
-    { type: 'time_exit', params: {}, weight: 0.3, enabled: true }
+  exit:[
+    {type:'fractal_stop',params:{},weight:1.0,enabled:true},
+    {type:'lips_stop',params:{},weight:1.0,enabled:true},
+    {type:'ao_flip',params:{},weight:0.8,enabled:true},
+    {type:'opposite_fractal',params:{},weight:1.0,enabled:true},
+    {type:'time_exit',params:{},weight:0.3,enabled:true}
   ],
-  filter: [
-    { type: 'ao_direction', params: {}, weight: 1.0, enabled: true },
-    { type: 'alligator_sleeping', params: {}, weight: 1.0, enabled: true },
-    { type: 'trend_align', params: {}, weight: 0.5, enabled: false },
-    { type: 'volume_ok', params: {}, weight: 0.3, enabled: false },
-    { type: 'rsi_ok', params: {}, weight: 0.4, enabled: false }
+  filter:[
+    {type:'alligator_awake',params:{},weight:1.0,enabled:true},
+    {type:'ao_confirm',params:{},weight:1.0,enabled:true},
+    {type:'ac_confirm',params:{},weight:0.5,enabled:false},
+    {type:'volume_ok',params:{},weight:0.3,enabled:false},
+    {type:'rsi_ok',params:{},weight:0.2,enabled:false}
   ]
 };
 
 // ---- Strategy constructor ----
-function createStrategy(name, version, desc, params, entryRules, exitRules, filterRules) {
-  return {
-    name: name || 'EvoStrategy',
-    version: version || '1.0.0',
-    description: desc || 'Self-evolving rule-based strategy',
-    generation: 0,
-    parentInfo: 'original',
+function createStrategy(name,version,desc,params,entryRules,exitRules,filterRules){
+  return{
+    name:name||'TradingChaos',
+    version:version||'1.0.0',
+    description:desc||'Bill Williams Trading Chaos — Alligator + Fractals + AO + AC',
+    generation:0,parentInfo:'original',
 
-    params: params || {
-      jawPeriod: 13, teethPeriod: 8, lipsPeriod: 5,
-      aoFast: 5, aoSlow: 34,
-      leverage: 200,
-      positionSize: 0.2,         // 每次开仓用20%资金作保证金
-      maxPositions: 3,           // 最多加仓到3层（金字塔）
-      addOnFractal: true,        // 同向分形突破时加仓
-      addOnAOSaucer: true,       // AO碟形确认时加仓
-      maxBars: 80,               // 最长持仓K线数（安全阀）
-      minSpread: 0.0003,
-      minVolumeRatio: 0.3,
-      rsiMax: 85, rsiMin: 15,
-      minSignalScore: 0.3
+    params:params||{
+      // Alligator (with right-shift per Williams)
+      jawPeriod:13,jawShift:8,
+      teethPeriod:8,teethShift:5,
+      lipsPeriod:5,lipsShift:3,
+      // AO
+      aoFast:5,aoSlow:34,
+      // Risk
+      leverage:200,
+      positionSize:0.05,     // 5% per trade
+      maxMargin:100,         // max $100 margin per entry
+      maxLayers:3,           // 3-step adding (AC based)
+      maxBars:100            // safety exit
     },
 
-    entryRules: entryRules || [
-      { id: 'e1', type: 'fractal_breakout', params: { lookback: 2 }, weight: 1.0, enabled: true },
-      { id: 'e2', type: 'alligator_align', params: {}, weight: 1.0, enabled: true },
-      { id: 'e3', type: 'lips_cross', params: {}, weight: 0.8, enabled: true },
-      { id: 'e4', type: 'ao_zero_cross', params: {}, weight: 0.9, enabled: true },
-      { id: 'e5', type: 'ma_cross', params: { fastPeriod: 5, slowPeriod: 10 }, weight: 0.6, enabled: true }
+    entryRules:entryRules||[
+      {id:'e1',type:'fractal_breakout',params:{lookback:3},weight:1.0,enabled:true},
+      {id:'e2',type:'ao_saucer',params:{},weight:0.8,enabled:true},
+      {id:'e3',type:'ao_twin_peaks',params:{},weight:0.7,enabled:true},
+      {id:'e4',type:'ao_zero_cross',params:{},weight:0.5,enabled:true},
+      {id:'e5',type:'alligator_bite',params:{},weight:0.6,enabled:true}
     ],
 
-    exitRules: exitRules || [
-      { id: 'x1', type: 'chaos_teeth_stop', params: {}, weight: 1.0, enabled: true },
-      { id: 'x2', type: 'chaos_lips_trail', params: {}, weight: 0.8, enabled: true },
-      { id: 'x3', type: 'chaos_ao_reverse', params: {}, weight: 1.0, enabled: true },
-      { id: 'x4', type: 'chaos_fractal_reverse', params: {}, weight: 1.0, enabled: true },
-      { id: 'x5', type: 'chaos_alligator_flip', params: {}, weight: 0.9, enabled: true },
-      { id: 'x6', type: 'time_exit', params: {}, weight: 0.3, enabled: true }
+    exitRules:exitRules||[
+      {id:'x1',type:'fractal_stop',params:{},weight:1.0,enabled:true},
+      {id:'x2',type:'lips_stop',params:{},weight:1.0,enabled:true},
+      {id:'x3',type:'ao_flip',params:{},weight:0.8,enabled:true},
+      {id:'x4',type:'opposite_fractal',params:{},weight:1.0,enabled:true},
+      {id:'x5',type:'time_exit',params:{},weight:0.3,enabled:true}
     ],
 
-    filterRules: filterRules || [
-      { id: 'f1', type: 'ao_direction', params: {}, weight: 1.0, enabled: true },
-      { id: 'f2', type: 'alligator_sleeping', params: {}, weight: 1.0, enabled: true },
-      { id: 'f3', type: 'trend_align', params: {}, weight: 0.5, enabled: false },
-      { id: 'f4', type: 'volume_ok', params: {}, weight: 0.3, enabled: false },
-      { id: 'f5', type: 'rsi_ok', params: {}, weight: 0.4, enabled: false }
+    filterRules:filterRules||[
+      {id:'f1',type:'alligator_awake',params:{},weight:1.0,enabled:true},
+      {id:'f2',type:'ao_confirm',params:{},weight:1.0,enabled:true},
+      {id:'f3',type:'ac_confirm',params:{},weight:0.5,enabled:false},
+      {id:'f4',type:'volume_ok',params:{},weight:0.3,enabled:false},
+      {id:'f5',type:'rsi_ok',params:{},weight:0.2,enabled:false}
     ],
 
-    // ---- Build context for rule evaluation (indicators precomputed, lazily) ----
-    _buildContext: function(candles) {
-      var mp = candles.map(function(c) { return (c.high + c.low) / 2; });
-      var self = this;
-      var ctx = {
-        jaw: _smma(mp, this.params.jawPeriod),
-        teeth: _smma(mp, this.params.teethPeriod),
-        lips: _smma(mp, this.params.lipsPeriod),
-        ao: (function(self) {
-          var f = _sma(mp, self.params.aoFast);
-          var s = _sma(mp, self.params.aoSlow);
-          return mp.map(function(_, i) { return (isNaN(f[i]) || isNaN(s[i])) ? NaN : f[i] - s[i]; });
-        })(this),
-        params: this.params,
-        entryRules: this.entryRules,
-        exitRules: this.exitRules,
-        filterRules: this.filterRules,
-        // Lazy precomputed indicators — only built if needed
-        _getCloses: function() { if(!this._closes)this._closes=candles.map(function(c){return c.close}); return this._closes; },
-        _getMA10: function() { if(!this.__ma10)this.__ma10=_sma(this._getCloses(),10); return this.__ma10; },
-        _getMA20: function() { if(!this.__ma20)this.__ma20=_sma(this._getCloses(),20); return this.__ma20; },
-        _getAvgVol20: function() {
+    // ---- Build context with all 4 chaos indicators ----
+    _buildContext:function(candles){
+      var mp=candles.map(function(c){return(c.high+c.low)/2;});
+      var self=this,p=this.params;
+      // Alligator with right-shift (Williams原著: Jaw右移8, Teeth右移5, Lips右移3)
+      var rawJaw=_smma(mp,p.jawPeriod),rawTeeth=_smma(mp,p.teethPeriod),rawLips=_smma(mp,p.lipsPeriod);
+      var jaw=[],teeth=[],lips=[];
+      for(var i=0;i<candles.length;i++){
+        jaw.push(i>=p.jawShift?rawJaw[i-p.jawShift]:NaN);
+        teeth.push(i>=p.teethShift?rawTeeth[i-p.teethShift]:NaN);
+        lips.push(i>=p.lipsShift?rawLips[i-p.lipsShift]:NaN);
+      }
+      // AO (Awesome Oscillator)
+      var aoFast=_sma(mp,p.aoFast),aoSlow=_sma(mp,p.aoSlow);
+      var ao=mp.map(function(_,i){return(!isNaN(aoFast[i])&&!isNaN(aoSlow[i]))?aoFast[i]-aoSlow[i]:NaN;});
+      // AC (Acceleration/Deceleration) = AO - 5-period SMA of AO
+      var aoSma5=_sma(ao.map(function(v){return isNaN(v)?0:v;}),5);
+      var ac=ao.map(function(v,i){return(!isNaN(v)&&!isNaN(aoSma5[i]))?v-aoSma5[i]:NaN;});
+      // Color: positive=green, negative=red
+      var aoColor=ao.map(function(v,i){
+        if(isNaN(v))return 0;
+        if(i===0)return v>=0?1:-1;
+        return v>=ao[i-1]?1:-1;
+      });
+      var acColor=ac.map(function(v,i){
+        if(isNaN(v))return 0;
+        if(i===0)return v>=0?1:-1;
+        return v>=ac[i-1]?1:-1;
+      });
+
+      var ctx={
+        jaw:jaw,teeth:teeth,lips:lips,ao:ao,ac:ac,aoColor:aoColor,acColor:acColor,
+        params:this.params,entryRules:this.entryRules,exitRules:this.exitRules,filterRules:this.filterRules,
+        _getCloses:function(){if(!this._closes)this._closes=candles.map(function(c){return c.close});return this._closes;},
+        _getMA10:function(){if(!this.__ma10)this.__ma10=_sma(this._getCloses(),10);return this.__ma10;},
+        _getMA20:function(){if(!this.__ma20)this.__ma20=_sma(this._getCloses(),20);return this.__ma20;},
+        _getAvgVol20:function(){
           if(this.__avgVol20)return this.__avgVol20;
           var a=[],s=0;
-          for(var vi=0;vi<candles.length;vi++){s+=candles[vi].volume;if(vi>=20)s-=candles[vi-20].volume;a.push(s/Math.min(20,vi+1))}
+          for(var vi=0;vi<candles.length;vi++){s+=candles[vi].volume;if(vi>=20)s-=candles[vi-20].volume;a.push(s/Math.min(20,vi+1));}
           this.__avgVol20=a;return a;
         },
-        _getRSI14: function() { if(!this.__rsi14)this.__rsi14=_calcRSI(this._getCloses(),14); return this.__rsi14; }
+        _getRSI14:function(){if(!this.__rsi14)this.__rsi14=_calcRSI(this._getCloses(),14);return this.__rsi14;}
       };
       return ctx;
     },
 
     // ---- Generate signal at index ----
-    generateSignal: function(candles, index, prebuiltCtx) {
-      var minIdx = Math.max(this.params.jawPeriod, this.params.aoSlow) + 5;
-      if (index < minIdx) return null;
-      var ctx = prebuiltCtx || this._buildContext(candles);
-      var i = index;
-
-      // Evaluate all entry rules
-      var bestSignal = null, bestScore = 0;
-      for (var r = 0; r < this.entryRules.length; r++) {
-        var rule = this.entryRules[r];
-        if (!rule.enabled || rule.weight <= 0) continue;
-        var sig = RuleEvaluators[rule.type] ? RuleEvaluators[rule.type](candles, i, rule, ctx) : null;
-        if (!sig) continue;
-
-        // Apply filter rules
-        var blocked = false, blockReason = '';
-        for (var f = 0; f < this.filterRules.length; f++) {
-          var fr = this.filterRules[f];
-          if (!fr.enabled || fr.weight <= 0) continue;
-          if (RuleEvaluators[fr.type] && !RuleEvaluators[fr.type](candles, i, sig, ctx)) {
-            blocked = true; blockReason = fr.type; break;
-          }
+    generateSignal:function(candles,index,prebuiltCtx){
+      var minIdx=Math.max(this.params.jawPeriod+this.params.jawShift,this.params.aoSlow)+5;
+      if(index<minIdx)return null;
+      var ctx=prebuiltCtx||this._buildContext(candles);
+      var i=index,bestSignal=null,bestScore=0;
+      for(var r=0;r<this.entryRules.length;r++){
+        var rule=this.entryRules[r];
+        if(!rule.enabled||rule.weight<=0)continue;
+        var sig=RuleEvaluators[rule.type]?RuleEvaluators[rule.type](candles,i,rule,ctx):null;
+        if(!sig)continue;
+        // Apply filters
+        var blocked=false;
+        for(var f=0;f<this.filterRules.length;f++){
+          var fr=this.filterRules[f];
+          if(!fr.enabled||fr.weight<=0)continue;
+          if(RuleEvaluators[fr.type]&&!RuleEvaluators[fr.type](candles,i,sig,ctx)){blocked=true;break;}
         }
-        if (blocked) continue;
-
-        var score = sig.strength * rule.weight;
-        if (score > bestScore) { bestSignal = sig; bestScore = score; }
+        if(blocked)continue;
+        var score=sig.strength*rule.weight;
+        if(score>bestScore){bestSignal=sig;bestScore=score;}
       }
-      var minScore = this.params.minSignalScore || 0;
-	      return (bestScore >= minScore) ? bestSignal : null;
+      return bestSignal;
     },
 
     // ---- Check exit conditions ----
-    _checkExit: function(candles, index, position, ctx) {
-      for (var r = 0; r < this.exitRules.length; r++) {
-        var rule = this.exitRules[r];
-        if (!rule.enabled || rule.weight <= 0) continue;
-        if (RuleEvaluators[rule.type]) {
-          var reason = RuleEvaluators[rule.type](candles, index, position, ctx);
-          if (reason) return reason;
+    _checkExit:function(candles,index,position,ctx){
+      for(var r=0;r<this.exitRules.length;r++){
+        var rule=this.exitRules[r];
+        if(!rule.enabled||rule.weight<=0)continue;
+        if(RuleEvaluators[rule.type]){
+          var reason=RuleEvaluators[rule.type](candles,index,position,ctx);
+          if(reason)return reason;
+        }
+      }
+      return null;
+    },
+
+    // ---- Check AC add-position signal (3-step adding) ----
+    checkACAdd:function(candles,index,position,ctx){
+      if(!ctx.ac||isNaN(ctx.ac[index]))return false;
+      var ac=ctx.ac,acC=ctx.acColor;
+      if(index<3)return false;
+      var isLong=!position.side||position.side!=='SHORT';
+      // AC穿越零轴 = 加仓信号
+      if(isLong&&ac[index]>0&&ac[index-1]<=0)return true;
+      if(!isLong&&ac[index]<0&&ac[index-1]>=0)return true;
+      // AC与AO同向连续3根增长
+      if(isLong&&acC[index]===1&&acC[index-1]===1&&acC[index-2]===1&&ac[index]>ac[index-1])return true;
+      if(!isLong&&acC[index]===-1&&acC[index-1]===-1&&acC[index-2]===-1&&ac[index]<ac[index-1])return true;
+      return false;
+    },
+
+    // ---- Take profit check (3-step: ATR×2, AO divergence, opposite fractal) ----
+    checkTakeProfit:function(candles,index,position,ctx,atr){
+      if(!position)return null;
+      var price=candles[index].close;
+      var isLong=!position.side||position.side!=='SHORT';
+      var entryPrice=position.entryPrice||position.entryPrice||0;
+      var pnlPct=isLong?(price-entryPrice)/entryPrice:(entryPrice-price)/entryPrice;
+      var lev=this.params.leverage||200;
+      var capGain=pnlPct*lev*100;
+
+      // Step 1: ATR×2 target → close 1/3
+      if(atr&&!isNaN(atr)&&!position._tp1){
+        var target=isLong?entryPrice+atr*2:entryPrice-atr*2;
+        if(isLong?price>=target:price<=target){
+          position._tp1=true;
+          return{reason:'TP1: ATR×2目标达成 +'+capGain.toFixed(0)+'%',closePct:0.33};
+        }
+      }
+      // Step 2: AO divergence (AO方向改变)
+      if(position._tp1&&!position._tp2&&index>=3){
+        var ao=ctx.ao;
+        if(isLong&&ao[index]<ao[index-1]&&ao[index-1]<ao[index-2]){
+          position._tp2=true;
+          return{reason:'TP2: AO动量背离 +'+capGain.toFixed(0)+'%',closePct:0.33};
+        }
+        if(!isLong&&ao[index]>ao[index-1]&&ao[index-1]>ao[index-2]){
+          position._tp2=true;
+          return{reason:'TP2: AO动量背离 +'+capGain.toFixed(0)+'%',closePct:0.33};
+        }
+      }
+      // Step 3: Opposite fractal → close remaining
+      if(position._tp2&&!position._tp3){
+        var sig=this.generateSignal(candles,index,ctx);
+        if(sig&&((isLong&&sig.type==='SELL'&&sig.strength>=2)||(!isLong&&sig.type==='BUY'&&sig.strength>=2))){
+          position._tp3=true;
+          return{reason:'TP3: 反向信号 +'+capGain.toFixed(0)+'%',closePct:1.0};
         }
       }
       return null;
     },
 
     // ---- Backtest ----
-    backtest: function(candles, initialCapital) {
-      initialCapital = initialCapital || 100000;
-      var capital = initialCapital, position = null;
-      var trades = [], equityCurve = [];
-      var ctx = this._buildContext(candles);
+    backtest:function(candles,initialCapital){
+      initialCapital=initialCapital||100000;
+      var capital=initialCapital,position=null,trades=[],equityCurve=[];
+      var ctx=this._buildContext(candles);
+      // Calculate ATR for take profit
+      var atrVals=[];
+      for(var ai=0;ai<candles.length;ai++){
+        if(ai===0){atrVals.push(NaN);continue}
+        var tr=Math.max(candles[ai].high-candles[ai].low,Math.abs(candles[ai].high-candles[ai-1].close),Math.abs(candles[ai].low-candles[ai-1].close));
+        if(ai<14)atrVals.push(NaN);
+        else if(ai===14){var s=0;for(var j=0;j<14;j++)s+=Math.max(candles[ai-j].high-candles[ai-j].low,Math.abs(candles[ai-j].high-candles[ai-j-1].close),Math.abs(candles[ai-j].low-candles[ai-j-1].close));atrVals.push(s/14)}
+        else atrVals.push((atrVals[ai-1]*13+tr)/14);
+      }
 
-      for (var i = 0; i < candles.length; i++) {
-        var price = candles[i].close;
-        equityCurve.push({ time: candles[i].time, value: capital + (position ? position.qty * price : 0) });
+      for(var i=0;i<candles.length;i++){
+        var price=candles[i].close;
+        equityCurve.push({time:candles[i].time,value:capital+(position?position.qty*price:0)});
 
-        // Check exit on open position (LONG or SHORT)
-        if (position) {
-          var exitReason = this._checkExit(candles, i, position, ctx);
-          if (exitReason) {
-            var pnl;
-            if (position.side === 'SHORT') {
-              pnl = (position.entryPrice - price) * position.qty;
-            } else {
-              pnl = (price - position.entryPrice) * position.qty;
-            }
-            if (pnl < -position.margin) pnl = -position.margin;
-            capital += position.margin + pnl;
-            var pnlPct = position.margin > 0 ? (pnl / position.margin * 100) : 0;
-            trades.push({ time: candles[i].time, type: position.side==='SHORT'?'COVER':'SELL', price: price,
-              qty: +position.qty.toFixed(6), pnl: +pnl.toFixed(2), reason: exitReason,
-              pnlPct: +pnlPct.toFixed(1), barsHeld: i - position.entryIndex, side: position.side||'LONG' });
-            position = null;
+        if(position){
+          // Check exit
+          var exitReason=this._checkExit(candles,i,position,ctx);
+          // Check take profit
+          var tpResult=this.checkTakeProfit(candles,i,position,ctx,atrVals[i]);
+          if(tpResult){
+            var closeQty=position.qty*tpResult.closePct;
+            var tpPnl=position.side==='SHORT'?(position.entryPrice-price)*closeQty:(price-position.entryPrice)*closeQty;
+            var tpMargin=position.margin*tpResult.closePct;
+            capital+=tpMargin+tpPnl;
+            position.qty-=closeQty;
+            position.margin-=tpMargin;
+            trades.push({time:candles[i].time,type:'TP',price:price,qty:+closeQty.toFixed(6),pnl:+tpPnl.toFixed(2),reason:tpResult.reason,side:position.side});
+            if(position.qty<=0)position=null;
             continue;
           }
-        }
-
-        var signal = this.generateSignal(candles, i, ctx);
-        if (!signal) continue;
-
-        // Enter new position (LONG or SHORT)
-        if (!position && (signal.type === 'BUY' || signal.type === 'SELL')) {
-          var isShort = signal.type === 'SELL';
-          var margin = capital * this.params.positionSize;
-          var lev = this.params.leverage || 1;
-          var qty = (margin * lev) / price;
-          position = {
-            side: isShort ? 'SHORT' : 'LONG',
-            qty: qty, entryPrice: price, entryIndex: i,
-            margin: margin, leverage: lev
-          };
-          capital -= margin;
-          trades.push({ time: candles[i].time, type: isShort?'SHORT':'LONG', price: price,
-            qty: +qty.toFixed(6), pnl: 0, reason: signal.reason + ' [s:' + signal.strength + ']', side: position.side });
-        }
-        // Position exists → check for add-position or reversal
-        else if (position && signal.strength >= 3 &&
-          ((position.side !== 'SHORT' && signal.type === 'SELL') || (position.side === 'SHORT' && signal.type === 'BUY'))) {
-          // Signal reversal of current position
-          var _pnl;
-          if (position.side === 'SHORT') {
-            _pnl = (position.entryPrice - price) * position.qty;
-          } else {
-            _pnl = (price - position.entryPrice) * position.qty;
+          if(exitReason){
+            var pnl=position.side==='SHORT'?(position.entryPrice-price)*position.qty:(price-position.entryPrice)*position.qty;
+            if(pnl<-position.margin)pnl=-position.margin;
+            capital+=position.margin+pnl;
+            var pnlPct=position.margin>0?(pnl/position.margin*100):0;
+            trades.push({time:candles[i].time,type:position.side==='SHORT'?'COVER':'SELL',price:price,qty:+position.qty.toFixed(6),pnl:+pnl.toFixed(2),reason:exitReason,pnlPct:+pnlPct.toFixed(1),barsHeld:i-position.entryIndex,side:position.side});
+            position=null;
+            continue;
           }
-          if (_pnl < -position.margin) _pnl = -position.margin;
-          capital += position.margin + _pnl;
-          trades.push({ time: candles[i].time, type: position.side==='SHORT'?'COVER':'SELL', price: price,
-            qty: +position.qty.toFixed(6), pnl: +_pnl.toFixed(2),
-            reason: 'Reversal: ' + signal.reason, barsHeld: i - position.entryIndex, side: position.side });
-          position = null;
+          // Check AC add position
+          if(this.checkACAdd(candles,i,position,ctx)&&(position._layers||1)<(this.params.maxLayers||3)){
+            var addMargin=Math.min(capital*this.params.positionSize,this.params.maxMargin||100);
+            var lev=this.params.leverage||1;
+            var addQty=(addMargin*lev)/price;
+            position.entryPrice=(position.entryPrice*position.qty+price*addQty)/(position.qty+addQty);
+            position.qty+=addQty;
+            position.margin+=addMargin;
+            position._layers=(position._layers||1)+1;
+            capital-=addMargin;
+            trades.push({time:candles[i].time,type:'ADD',price:price,qty:+addQty.toFixed(6),pnl:0,reason:'AC加仓 #'+position._layers,side:position.side});
+          }
+        }
+
+        var signal=this.generateSignal(candles,i,ctx);
+        if(!signal)continue;
+
+        if(!position&&(signal.type==='BUY'||signal.type==='SELL')){
+          var isShort=signal.type==='SELL';
+          var margin=Math.min(capital*this.params.positionSize,this.params.maxMargin||100);
+          var lev=this.params.leverage||1;
+          var qty=(margin*lev)/price;
+          position={side:isShort?'SHORT':'LONG',qty:qty,entryPrice:price,entryIndex:i,margin:margin,leverage:lev,_layers:1};
+          capital-=margin;
+          trades.push({time:candles[i].time,type:isShort?'SHORT':'LONG',price:price,qty:+qty.toFixed(6),pnl:0,reason:signal.reason+' [s:'+signal.strength+']',side:position.side});
         }
       }
 
-      // Close at end
-      if (position) {
-        var lastPx = candles[candles.length - 1].close;
-        var endPnl;
-        if (position.side === 'SHORT') {
-          endPnl = (position.entryPrice - lastPx) * position.qty;
-        } else {
-          endPnl = (lastPx - position.entryPrice) * position.qty;
-        }
-        if (endPnl < -position.margin) endPnl = -position.margin;
-        capital += position.margin + endPnl;
-        var endPnlPct = position.margin > 0 ? (endPnl / position.margin * 100) : 0;
-        trades.push({ time: candles[candles.length - 1].time, type: position.side==='SHORT'?'COVER':'SELL', price: lastPx,
-          qty: +position.qty.toFixed(6), pnl: +endPnl.toFixed(2), reason: 'End of backtest',
-          pnlPct: +endPnlPct.toFixed(1), barsHeld: candles.length - 1 - position.entryIndex, side: position.side });
+      if(position){
+        var lastPx=candles[candles.length-1].close;
+        var endPnl=position.side==='SHORT'?(position.entryPrice-lastPx)*position.qty:(lastPx-position.entryPrice)*position.qty;
+        if(endPnl<-position.margin)endPnl=-position.margin;
+        capital+=position.margin+endPnl;
+        trades.push({time:candles[candles.length-1].time,type:'CLOSE',price:lastPx,qty:+position.qty.toFixed(6),pnl:+endPnl.toFixed(2),reason:'End',side:position.side});
       }
 
-      var closedTrades = trades.filter(function(t) { return t.pnl !== 0; });
-      var wins = closedTrades.filter(function(t) { return t.pnl > 0; });
-      var losses = closedTrades.filter(function(t) { return t.pnl < 0; });
-      var entryTrades = trades.filter(function(t) { return t.pnl === 0; });
+      var closedTrades=trades.filter(function(t){return t.pnl!==0;});
+      var wins=closedTrades.filter(function(t){return t.pnl>0;});
+      var losses=closedTrades.filter(function(t){return t.pnl<0;});
+      var entryTrades=trades.filter(function(t){return t.pnl===0;});
 
-      return {
-        initialCapital: initialCapital,
-        finalCapital: +capital.toFixed(2),
-        totalReturn: +((capital - initialCapital) / initialCapital * 100).toFixed(2),
-        totalEntries: entryTrades.length,
-        closedTrades: closedTrades.length,
-        winningTrades: wins.length,
-        losingTrades: losses.length,
-        winRate: closedTrades.length > 0 ? +(wins.length / closedTrades.length * 100).toFixed(1) : 0,
-        avgBarsHeld: closedTrades.length > 0 ? +(closedTrades.reduce(function(s,t){return s+(t.barsHeld||0)},0)/closedTrades.length).toFixed(1) : 0,
-        trades: trades, equityCurve: equityCurve
+      return{
+        initialCapital:initialCapital,finalCapital:+capital.toFixed(2),
+        totalReturn:+((capital-initialCapital)/initialCapital*100).toFixed(2),
+        totalEntries:entryTrades.length,closedTrades:closedTrades.length,
+        winningTrades:wins.length,losingTrades:losses.length,
+        winRate:closedTrades.length>0?+(wins.length/closedTrades.length*100).toFixed(1):0,
+        avgBarsHeld:closedTrades.length>0?+(closedTrades.reduce(function(s,t){return s+(t.barsHeld||0)},0)/closedTrades.length).toFixed(1):0,
+        trades:trades,equityCurve:equityCurve
       };
     },
 
-    // ---- Self-diagnosis: analyze losing trades to guide evolution ----
-    _diagnose: function(candles, btResult, liveTrades) {
-      var self = this;
-      var ctx = this._buildContext(candles);
-      var closedTrades = btResult.trades.filter(function(t) { return t.pnl !== 0; });
-      var losingTrades = closedTrades.filter(function(t) { return t.pnl < 0; });
-      var diagnosis = { addFilters: [], removeFilters: [], addEntry: [], adjustParams: {} };
-
-      // Merge live trade feedback (higher priority than backtest analysis)
-      if (liveTrades && liveTrades.length > 0) {
-        var liveDiag = this._learnFromTrades(liveTrades, candles);
-        for (var ld = 0; ld < liveDiag.addFilters.length; ld++) {
-          if (diagnosis.addFilters.indexOf(liveDiag.addFilters[ld]) < 0) {
-            diagnosis.addFilters.push(liveDiag.addFilters[ld]);
-          }
-        }
-        for (var le = 0; le < liveDiag.addEntry.length; le++) {
-          if (diagnosis.addEntry.indexOf(liveDiag.addEntry[le]) < 0) {
-            diagnosis.addEntry.push(liveDiag.addEntry[le]);
-          }
-        }
-        for (var pk2 in liveDiag.adjustParams) {
-          if (liveDiag.adjustParams.hasOwnProperty(pk2)) {
-            diagnosis.adjustParams[pk2] = liveDiag.adjustParams[pk2];
-          }
-        }
+    // ---- Self-diagnosis ----
+    _diagnose:function(candles,btResult,liveTrades){
+      var ctx=this._buildContext(candles);
+      var diagnosis={addFilters:[],removeFilters:[],addEntry:[],adjustParams:{}};
+      if(liveTrades&&liveTrades.length>0){
+        var liveDiag=this._learnFromTrades(liveTrades,candles);
+        for(var ld=0;ld<liveDiag.addFilters.length;ld++){if(diagnosis.addFilters.indexOf(liveDiag.addFilters[ld])<0)diagnosis.addFilters.push(liveDiag.addFilters[ld])}
+        for(var le=0;le<liveDiag.addEntry.length;le++){if(diagnosis.addEntry.indexOf(liveDiag.addEntry[le])<0)diagnosis.addEntry.push(liveDiag.addEntry[le])}
+        for(var pk2 in liveDiag.adjustParams){diagnosis.adjustParams[pk2]=liveDiag.adjustParams[pk2]}
       }
-
-      if (losingTrades.length === 0) {
-        diagnosis.addEntry.push('ao_zero_cross');
-        diagnosis.addEntry.push('ma_cross');
-        return diagnosis;
+      var closedTrades=btResult.trades.filter(function(t){return t.pnl!==0;});
+      var losingTrades=closedTrades.filter(function(t){return t.pnl<0;});
+      if(losingTrades.length===0){diagnosis.addEntry.push('ao_saucer');return diagnosis}
+      // Filters to enable
+      if(btResult.winRate<40){
+        diagnosis.addFilters.push('ac_confirm');diagnosis.addFilters.push('volume_ok');
       }
-
-      // Limit analysis to a sample for performance on large datasets
-      var maxAnalyze = Math.min(losingTrades.length, 200);
-      if (losingTrades.length > maxAnalyze) {
-        // Sort by worst P&L first
-        losingTrades.sort(function(a, b) { return a.pnl - b.pnl; });
-        losingTrades = losingTrades.slice(0, maxAnalyze);
-      }
-
-      // Pre-build candle time→index map
-      var candleIdxMap = {};
-      for (var ci = 0; ci < candles.length; ci++) {
-        candleIdxMap[candles[ci].time] = ci;
-      }
-      // Pre-build entry trade map: for each SELL, find the preceding BUY
-      var buyTrades = btResult.trades.filter(function(t) { return t.pnl === 0; });
-      var buyByTime = {};
-      for (var bi = 0; bi < buyTrades.length; bi++) {
-        buyByTime[buyTrades[bi].time] = buyTrades[bi];
-      }
-      var buyTimes = Object.keys(buyByTime).map(Number).sort(function(a, b) { return a - b; });
-
-      // Analyze each losing trade
-      var filterFailCounts = {};
-      for (var lt = 0; lt < losingTrades.length; lt++) {
-        var trade = losingTrades[lt];
-        // Binary search for the preceding buy
-        var lo = 0, hi = buyTimes.length - 1, entryTime = -1;
-        while (lo <= hi) {
-          var mid = Math.floor((lo + hi) / 2);
-          if (buyTimes[mid] <= trade.time) { entryTime = buyTimes[mid]; lo = mid + 1; }
-          else { hi = mid - 1; }
-        }
-        if (entryTime < 0) continue;
-        var entryTrade = buyByTime[entryTime];
-        if (!entryTrade) continue;
-        var entryIdx = candleIdxMap[entryTrade.time];
-        if (entryIdx === undefined) continue;
-
-        // Check which filters would have blocked this entry
-        for (var f = 0; f < this.filterRules.length; f++) {
-          var fr = this.filterRules[f];
-          if (fr.enabled) continue;
-          var filterType = fr.type;
-          if (RuleEvaluators[filterType]) {
-            var wouldPass = RuleEvaluators[filterType](candles, entryIdx, { type: 'BUY' }, ctx);
-            if (!wouldPass) {
-              filterFailCounts[filterType] = (filterFailCounts[filterType] || 0) + 1;
-            }
-          }
-        }
-      }
-
-      // Filters that would have blocked >30% of losing trades
-      var lossThreshold = Math.max(1, losingTrades.length * 0.3);
-      for (var ft in filterFailCounts) {
-        if (filterFailCounts[ft] >= lossThreshold) {
-          diagnosis.addFilters.push(ft);
-        }
-      }
-
-      // If win rate is good but few trades, add entry rules
-      if (btResult.winRate > 50 && btResult.totalEntries < 5) {
-        diagnosis.addEntry.push('ao_zero_cross');
-        diagnosis.addEntry.push('lips_cross');
-      }
-
-      // If win rate is low, add more filters
-      if (btResult.winRate < 40 && diagnosis.addFilters.length === 0) {
-        var allFilters = ['trend_align', 'volume_ok', 'rsi_ok', 'ao_direction'];
-        for (var af = 0; af < allFilters.length; af++) {
-          if (diagnosis.addFilters.indexOf(allFilters[af]) < 0) {
-            diagnosis.addFilters.push(allFilters[af]);
-            break;
-          }
-        }
-      }
-
-      // Chaos-based parameter adjustments
-      if (losingTrades.length > btResult.winningTrades) {
-        // Enable more exit rules to cut losers faster
-        diagnosis.addFilters.push('ao_direction');
-      }
-
       return diagnosis;
     },
 
-    // ---- Live trade feedback learning ----
-    _learnFromTrades: function(tradeResults, candles) {
-      var self = this;
-      var diagnosis = { addFilters: [], removeFilters: [], addEntry: [], adjustParams: {} };
-      if (!tradeResults || tradeResults.length === 0) return diagnosis;
-
-      var lossFilters = {};
-      var winFilters = {};
-      var entryWins = {};
-      var entryLosses = {};
-      var totalWinPnlAbs = 0, totalLossPnlAbs = 0;
-      var winCount = 0, lossCount = 0;
-
-      var ctx = candles ? this._buildContext(candles) : null;
-
-      for (var t = 0; t < tradeResults.length; t++) {
-        var trade = tradeResults[t];
-        var isWin = trade.pnl > 0;
-        var et = trade.entryType || 'unknown';
-
-        if (isWin) {
-          entryWins[et] = (entryWins[et] || 0) + 1;
-          totalWinPnlAbs += Math.abs(trade.pnl || 0);
-          winCount++;
-        } else {
-          entryLosses[et] = (entryLosses[et] || 0) + 1;
-          totalLossPnlAbs += Math.abs(trade.pnl || 0);
-          lossCount++;
-        }
-
-        // Check which DISABLED filters would have blocked this trade's entry
-        if (ctx && trade.entryIdx !== undefined && trade.entryIdx >= 0) {
-          for (var f = 0; f < this.filterRules.length; f++) {
-            var fr = this.filterRules[f];
-            if (fr.enabled) continue;
-            if (!RuleEvaluators[fr.type]) continue;
-            var wouldPass = RuleEvaluators[fr.type](candles, trade.entryIdx, { type: 'BUY' }, ctx);
-            if (!wouldPass) {
-              if (isWin) {
-                winFilters[fr.type] = (winFilters[fr.type] || 0) + 1;
-              } else {
-                lossFilters[fr.type] = (lossFilters[fr.type] || 0) + 1;
-              }
-            }
-          }
-        }
+    _learnFromTrades:function(tradeResults,candles){
+      var diagnosis={addFilters:[],removeFilters:[],addEntry:[],adjustParams:{}};
+      if(!tradeResults||tradeResults.length===0)return diagnosis;
+      var lossCount=0,winCount=0;
+      for(var t=0;t<tradeResults.length;t++){if(tradeResults[t].pnl>0)winCount++;else lossCount++}
+      if(lossCount>winCount&&lossCount>=3){
+        diagnosis.addFilters.push('ac_confirm');diagnosis.addFilters.push('rsi_ok');
       }
-
-      // Enable filters that block many losses but few wins
-      for (var ft in lossFilters) {
-        if (!lossFilters.hasOwnProperty(ft)) continue;
-        var blockedLosses = lossFilters[ft] || 0;
-        var blockedWins = winFilters[ft] || 0;
-        var lossBlockRate = lossCount > 0 ? blockedLosses / lossCount : 0;
-        var winBlockRate = winCount > 0 ? blockedWins / winCount : 0;
-        if (lossBlockRate > 0.3 && winBlockRate < lossBlockRate) {
-          diagnosis.addFilters.push(ft);
-        }
-      }
-
-      // Boost entry rules with strong live win rate
-      for (var et2 in entryWins) {
-        if (!entryWins.hasOwnProperty(et2)) continue;
-        var w = entryWins[et2] || 0;
-        var l = entryLosses[et2] || 0;
-        if (w + l >= 2 && w / (w + l) >= 0.6) {
-          diagnosis.addEntry.push(et2);
-        }
-      }
-
-      // Chaos-based adjustments from live results
-      if (lossCount > winCount && lossCount >= 3) {
-        // More losses than wins → enable filters to be more selective
-        diagnosis.addFilters.push('ao_direction');
-        diagnosis.addFilters.push('alligator_sleeping');
-      }
-
       return diagnosis;
     },
 
-    // ---- Clone with deep copy ----
-    _clone: function() {
-      return createStrategy(
-        this.name, this.version, this.description,
-        JSON.parse(JSON.stringify(this.params)),
-        JSON.parse(JSON.stringify(this.entryRules)),
-        JSON.parse(JSON.stringify(this.exitRules)),
-        JSON.parse(JSON.stringify(this.filterRules))
-      );
+    _clone:function(){
+      return createStrategy(this.name,this.version,this.description,
+        JSON.parse(JSON.stringify(this.params)),JSON.parse(JSON.stringify(this.entryRules)),
+        JSON.parse(JSON.stringify(this.exitRules)),JSON.parse(JSON.stringify(this.filterRules)));
     },
 
-    // ---- Mutate: return a mutated copy ----
-    _mutate: function(diagnosis) {
-      var mutant = this._clone();
-      mutant.generation = (this.generation || 0) + 1;
-      mutant.parentInfo = this.name + '-gen' + (this.generation||0);
-      var ruleIdCounter = 100;
+    _mutate:function(diagnosis){
+      var mutant=this._clone();
+      mutant.generation=(this.generation||0)+1;
+      mutant.parentInfo=this.name+'-gen'+(this.generation||0);
+      var ruleIdCounter=100;
 
-      // --- Parameter mutation (always) ---
-      var paramKeys = ['jawPeriod','teethPeriod','lipsPeriod','aoFast','aoSlow','leverage','minSpread','minVolumeRatio','minSignalScore','maxBars'];
-      for (var pk = 0; pk < paramKeys.length; pk++) {
-        var key = paramKeys[pk];
-        if (Math.random() < 0.35) {
-          var val = mutant.params[key];
-          var delta = val * (Math.random() - 0.5) * 0.4;
-          var newVal = val + delta;
-          if (['jawPeriod','teethPeriod','lipsPeriod','aoFast','aoSlow'].indexOf(key) >= 0) {
-            newVal = Math.round(newVal);
-          }
-          if (key === 'jawPeriod') newVal = Math.max(7, Math.min(21, newVal));
-          if (key === 'teethPeriod') newVal = Math.max(5, Math.min(13, newVal));
-          if (key === 'lipsPeriod') newVal = Math.max(3, Math.min(8, newVal));
-          if (key === 'aoFast') newVal = Math.max(3, Math.min(8, newVal));
-          if (key === 'aoSlow') newVal = Math.max(21, Math.min(55, newVal));
-          if (key === 'leverage') newVal = Math.round(Math.max(10, Math.min(200, newVal)));
-          if (key === 'minSignalScore') newVal = Math.max(0.3, Math.min(5.0, +newVal.toFixed(2)));
-          mutant.params[key] = +newVal.toFixed(4);
+      // Param mutation
+      var paramKeys=['jawPeriod','teethPeriod','lipsPeriod','aoFast','aoSlow','leverage','maxBars'];
+      for(var pk=0;pk<paramKeys.length;pk++){
+        var key=paramKeys[pk];
+        if(Math.random()<0.3){
+          var val=mutant.params[key],delta=val*(Math.random()-0.5)*0.3,newVal=val+delta;
+          if(key==='jawPeriod')newVal=Math.max(7,Math.min(21,Math.round(newVal)));
+          if(key==='teethPeriod')newVal=Math.max(5,Math.min(13,Math.round(newVal)));
+          if(key==='lipsPeriod')newVal=Math.max(3,Math.min(8,Math.round(newVal)));
+          if(key==='aoFast')newVal=Math.max(3,Math.min(8,Math.round(newVal)));
+          if(key==='aoSlow')newVal=Math.max(21,Math.min(55,Math.round(newVal)));
+          if(key==='leverage')newVal=Math.round(Math.max(10,Math.min(200,newVal)));
+          if(key==='maxBars')newVal=Math.max(30,Math.min(200,Math.round(newVal)));
+          mutant.params[key]=newVal;
         }
       }
-      // Keep jaw > teeth > lips
-      if (mutant.params.jawPeriod <= mutant.params.teethPeriod) mutant.params.jawPeriod = mutant.params.teethPeriod + 2;
-      if (mutant.params.teethPeriod <= mutant.params.lipsPeriod) mutant.params.teethPeriod = mutant.params.lipsPeriod + 2;
+      if(mutant.params.jawPeriod<=mutant.params.teethPeriod)mutant.params.jawPeriod=mutant.params.teethPeriod+2;
+      if(mutant.params.teethPeriod<=mutant.params.lipsPeriod)mutant.params.teethPeriod=mutant.params.lipsPeriod+2;
 
-      // --- Rule mutations ---
-      var allRules = [
-        { arr: mutant.entryRules, cat: 'entry' },
-        { arr: mutant.exitRules, cat: 'exit' },
-        { arr: mutant.filterRules, cat: 'filter' }
-      ];
-
-      for (var ar = 0; ar < allRules.length; ar++) {
-        var ruleArr = allRules[ar].arr;
-        for (var ri = 0; ri < ruleArr.length; ri++) {
-          if (Math.random() < 0.25) {
-            // Toggle enabled
-            ruleArr[ri].enabled = !ruleArr[ri].enabled;
-          }
-          if (Math.random() < 0.20) {
-            // Adjust weight
-            ruleArr[ri].weight = +(Math.max(0, Math.min(2, ruleArr[ri].weight + (Math.random()-0.5)*0.5)).toFixed(2));
-          }
-          if (Math.random() < 0.15 && ruleArr[ri].type === 'fractal_breakout') {
-            ruleArr[ri].params.lookback = Math.max(1, Math.min(6, ruleArr[ri].params.lookback + (Math.random()>0.5?1:-1)));
-          }
-          if (Math.random() < 0.15 && ruleArr[ri].type === 'ma_cross') {
-            ruleArr[ri].params.fastPeriod = Math.max(3, Math.min(10, ruleArr[ri].params.fastPeriod + (Math.random()>0.5?2:-2)));
-            ruleArr[ri].params.slowPeriod = Math.max(ruleArr[ri].params.fastPeriod+3, Math.min(40, ruleArr[ri].params.slowPeriod + (Math.random()>0.5?5:-5)));
-          }
-        }
-
-        // Remove a rule (10% chance, if > 2 rules)
-        if (ruleArr.length > 2 && Math.random() < 0.10) {
-          // Prefer removing disabled or low-weight rules
-          ruleArr.sort(function(a, b) { return a.weight - b.weight; });
-          ruleArr.shift();
+      // Rule toggle
+      var allRules=[{arr:mutant.entryRules},{arr:mutant.exitRules},{arr:mutant.filterRules}];
+      for(var ar=0;ar<allRules.length;ar++){
+        for(var ri=0;ri<allRules[ar].arr.length;ri++){
+          if(Math.random()<0.2)allRules[ar].arr[ri].enabled=!allRules[ar].arr[ri].enabled;
+          if(Math.random()<0.15)allRules[ar].arr[ri].weight=+Math.max(0.1,Math.min(2,allRules[ar].arr[ri].weight+(Math.random()-0.5)*0.4)).toFixed(2);
         }
       }
 
-      // --- Add new filters based on diagnosis ---
-      if (diagnosis && diagnosis.addFilters) {
-        for (var df = 0; df < diagnosis.addFilters.length; df++) {
-          var ft = diagnosis.addFilters[df];
-          // Check if not already enabled
-          var exists = mutant.filterRules.some(function(r) { return r.type === ft && r.enabled; });
-          if (!exists) {
-            // Enable existing or add new
-            var existing = mutant.filterRules.find(function(r) { return r.type === ft; });
-            if (existing) { existing.enabled = true; existing.weight = 0.8; }
-            else {
-              mutant.filterRules.push({ id: 'f' + (++ruleIdCounter), type: ft, params: {}, weight: 0.7, enabled: true });
-            }
-          }
-        }
+      // Apply diagnosis
+      if(diagnosis){
+        if(diagnosis.addFilters){for(var df=0;df<diagnosis.addFilters.length;df++){
+          var ft=diagnosis.addFilters[df],existing=mutant.filterRules.find(function(r){return r.type===ft});
+          if(existing){existing.enabled=true;existing.weight=0.7}else{mutant.filterRules.push({id:'f'+(++ruleIdCounter),type:ft,params:{},weight:0.6,enabled:true})}
+        }}
+        if(diagnosis.addEntry){for(var de=0;de<diagnosis.addEntry.length;de++){
+          var et=diagnosis.addEntry[de],ex=mutant.entryRules.find(function(r){return r.type===et});
+          if(ex){ex.enabled=true;ex.weight=0.6}else{mutant.entryRules.push({id:'e'+(++ruleIdCounter),type:et,params:{},weight:0.5,enabled:true})}
+        }}
+        if(diagnosis._bootstrap){mutant.params.positionSize=Math.min(0.05,mutant.params.positionSize*0.7)}
       }
-
-      // --- Bootstrap: if zero-trade strategy, force trade-enabling mutations ---
-      if (diagnosis && diagnosis._bootstrap) {
-        mutant.params.minSignalScore = Math.max(0.3, +(mutant.params.minSignalScore * 0.7).toFixed(2));
-        var enabledFilters = mutant.filterRules.filter(function(r) { return r.enabled; });
-        if (enabledFilters.length >= 2) {
-          enabledFilters[enabledFilters.length - 1].enabled = false;
-        }
-      }
-
-      // --- Add entry rules based on diagnosis ---
-      if (diagnosis && diagnosis.addEntry) {
-        for (var de = 0; de < diagnosis.addEntry.length; de++) {
-          var et = diagnosis.addEntry[de];
-          var ex2 = mutant.entryRules.some(function(r) { return r.type === et && r.enabled; });
-          if (!ex2) {
-            var ex = mutant.entryRules.find(function(r) { return r.type === et; });
-            if (ex) { ex.enabled = true; ex.weight = 0.6; }
-            else {
-              mutant.entryRules.push({ id: 'e' + (++ruleIdCounter), type: et, params: et==='ma_cross'?{fastPeriod:5,slowPeriod:10}:{}, weight: 0.5, enabled: true });
-            }
-          }
-        }
-      }
-
-      // --- Small chance: add random new rule from template ---
-      if (Math.random() < 0.15) {
-        var cats = ['entry', 'exit', 'filter'];
-        var cat = cats[Math.floor(Math.random() * 3)];
-        var templates = RuleTemplates[cat];
-        var t = templates[Math.floor(Math.random() * templates.length)];
-        var targetArr = cat === 'entry' ? mutant.entryRules : (cat === 'exit' ? mutant.exitRules : mutant.filterRules);
-        var already = targetArr.some(function(r) { return r.type === t.type; });
-        if (!already) {
-          targetArr.push({ id: cat[0] + (++ruleIdCounter), type: t.type, params: JSON.parse(JSON.stringify(t.params)), weight: t.weight, enabled: !t.enabled });
-        }
-      }
-
       return mutant;
     },
 
-    // ---- Crossover: breed two strategies ----
-    _crossover: function(other) {
-      var child = this._clone();
-      child.generation = Math.max(this.generation, other.generation) + 1;
-      child.parentInfo = this.name + ' x ' + other.name;
-      child.name = 'EvoStrategy';
-      child.version = (parseFloat(this.version) + 0.1).toFixed(1);
-
-      // Mix params
-      for (var k in child.params) {
-        if (child.params.hasOwnProperty(k) && other.params.hasOwnProperty(k)) {
-          child.params[k] = Math.random() < 0.5 ? this.params[k] : other.params[k];
-        }
-      }
-
-      // Mix rules: randomly select from each parent
-      var categories = ['entryRules', 'exitRules', 'filterRules'];
-      for (var c = 0; c < categories.length; c++) {
-        var cat = categories[c];
-        var p1Rules = this[cat], p2Rules = other[cat];
-        var allRuleTypes = [];
-        var seen = {};
-        for (var i = 0; i < p1Rules.length; i++) { if (!seen[p1Rules[i].type]) { allRuleTypes.push(p1Rules[i]); seen[p1Rules[i].type] = true; } }
-        for (var j = 0; j < p2Rules.length; j++) { if (!seen[p2Rules[j].type]) { allRuleTypes.push(p2Rules[j]); seen[p2Rules[j].type] = true; } }
-        var newRules = [];
-        for (var ri = 0; ri < allRuleTypes.length; ri++) {
-          var r1 = p1Rules.find(function(r) { return r.type === allRuleTypes[ri].type; });
-          var r2 = p2Rules.find(function(r) { return r.type === allRuleTypes[ri].type; });
-          var chosen = (Math.random() < 0.5 && r1) ? r1 : (r2 || r1);
-          newRules.push(JSON.parse(JSON.stringify(chosen)));
-        }
-        child[cat] = newRules;
-      }
-
+    _crossover:function(other){
+      var child=this._clone();
+      child.generation=Math.max(this.generation,other.generation)+1;
+      child.parentInfo=this.name+' x '+other.name;
+      for(var k in child.params){if(child.params.hasOwnProperty(k)&&other.params.hasOwnProperty(k))child.params[k]=Math.random()<0.5?this.params[k]:other.params[k]}
       return child;
     },
 
-    // ---- Iterate: genetic evolution across generations ----
-    iterate: function(candles, config) {
-      if (!candles || candles.length < 20) return { generations:0, populationSize:0, generationLog:[], bestStrategy:null, bestResult:null, topStrategies:[] };
-      config = config || {};
-      var popSize = typeof config === 'number' ? 20 : (config.populationSize || 20);
-      var generations = typeof config === 'number' ? config : (config.generations || 5);
-      var onProgress = config.onProgress || null;
-      var liveFeedback = config.liveFeedback || [];
-      var self = this;
-
-      // Create initial population from this strategy
-      var population = [this._clone()];
-      for (var i = 1; i < popSize; i++) {
-        population.push(this._mutate(null));
+    iterate:function(candles,config){
+      if(!candles||candles.length<20)return{generations:0,populationSize:0,generationLog:[],bestStrategy:null,bestResult:null,topStrategies:[]};
+      config=config||{};
+      var popSize=typeof config==='number'?20:(config.populationSize||20);
+      var generations=typeof config==='number'?config:(config.generations||5);
+      var liveFeedback=config.liveFeedback||[],self=this;
+      var population=[this._clone()];
+      for(var i=1;i<popSize;i++)population.push(this._mutate(null));
+      var bestEver=null,bestEverResult=null,generationLog=[];
+      for(var gen=0;gen<generations;gen++){
+        var scored=[];
+        for(var pi=0;pi<population.length;pi++){var bt=population[pi].backtest(candles);scored.push({strategy:population[pi],result:bt})}
+        scored.sort(function(a,b){var sA=a.result.totalReturn*(a.result.winRate/100),sB=b.result.totalReturn*(b.result.winRate/100);return sB-sA});
+        if(!bestEver||scored[0].result.totalReturn>bestEverResult.totalReturn){bestEver=scored[0].strategy._clone();bestEverResult=scored[0].result}
+        generationLog.push({generation:gen+1,bestReturn:scored[0].result.totalReturn,bestWinRate:scored[0].result.winRate,bestTrades:scored[0].result.closedTrades});
+        var diagnosis=scored[0].result.trades.length<=3000?scored[0].strategy._diagnose(candles,scored[0].result,liveFeedback):null;
+        var survivors=scored.slice(0,5).map(function(s){return s.strategy});
+        var nextGen=survivors.slice();
+        while(nextGen.length<popSize){
+          if(Math.random()<0.6&&survivors.length>=2){var p1=survivors[Math.floor(Math.random()*survivors.length)],p2=survivors[Math.floor(Math.random()*survivors.length)];nextGen.push(p1!==p2?p1._crossover(p2)._mutate(diagnosis):survivors[Math.floor(Math.random()*survivors.length)]._mutate(diagnosis))}
+          else{nextGen.push(survivors[Math.floor(Math.random()*survivors.length)]._mutate(diagnosis))}
+        }
+        population=nextGen.slice(0,popSize);
+        if(Math.random()<0.5)population[population.length-1]=bestEver._clone();
       }
-
-      var bestEver = null, bestEverResult = null;
-      var generationLog = [];
-
-      for (var gen = 0; gen < generations; gen++) {
-        // Evaluate all individuals
-        var scored = [];
-        for (var pi = 0; pi < population.length; pi++) {
-          var bt = population[pi].backtest(candles);
-          scored.push({ strategy: population[pi], result: bt });
-        }
-
-        // Sort by totalReturn (could use Sharpe-like: return * winRate/100)
-        scored.sort(function(a, b) {
-          var tradePenaltyA = a.result.closedTrades < 5 ? -50 : 0;
-          var tradePenaltyB = b.result.closedTrades < 5 ? -50 : 0;
-          var scoreA = a.result.totalReturn * (a.result.winRate / 100) + tradePenaltyA;
-          var scoreB = b.result.totalReturn * (b.result.winRate / 100) + tradePenaltyB;
-          return scoreB - scoreA;
-        });
-
-        if (!bestEver || scored[0].result.totalReturn > bestEverResult.totalReturn) {
-          bestEver = scored[0].strategy._clone();
-          bestEverResult = scored[0].result;
-        }
-
-        generationLog.push({
-          generation: gen + 1,
-          bestReturn: scored[0].result.totalReturn,
-          bestWinRate: scored[0].result.winRate,
-          bestTrades: scored[0].result.closedTrades,
-          avgReturn: +(scored.reduce(function(s, x) { return s + x.result.totalReturn; }, 0) / scored.length).toFixed(2),
-          bestRuleCount: scored[0].strategy.entryRules.filter(function(r){return r.enabled}).length + 'E/' +
-                        scored[0].strategy.exitRules.filter(function(r){return r.enabled}).length + 'X/' +
-                        scored[0].strategy.filterRules.filter(function(r){return r.enabled}).length + 'F'
-        });
-
-        // Progress callback
-        if (onProgress) {
-          onProgress({
-            generation: gen + 1,
-            totalGenerations: generations,
-            bestReturn: scored[0].result.totalReturn,
-            bestWinRate: scored[0].result.winRate,
-            bestTrades: scored[0].result.closedTrades,
-            pct: Math.round((gen + 1) / generations * 100)
-          });
-        }
-
-        // Self-diagnosis on the best performer (skip on very large datasets)
-        var diagnosis = null;
-        if (scored[0].result.trades.length <= 3000) {
-          diagnosis = scored[0].strategy._diagnose(candles, scored[0].result, liveFeedback);
-        }
-
-        // Selection: top 5 survive (elitism)
-        var survivors = scored.slice(0, 5).map(function(s) { return s.strategy; });
-
-        // Breed next generation
-        var nextGen = survivors.slice(); // Keep survivors
-
-        while (nextGen.length < popSize) {
-          if (Math.random() < 0.6 && survivors.length >= 2) {
-            // Crossover
-            var p1 = survivors[Math.floor(Math.random() * survivors.length)];
-            var p2 = survivors[Math.floor(Math.random() * survivors.length)];
-            if (p1 !== p2) {
-              nextGen.push(p1._crossover(p2)._mutate(diagnosis));
-            } else {
-              nextGen.push(survivors[Math.floor(Math.random() * survivors.length)]._mutate(diagnosis));
-            }
-          } else {
-            // Mutation only
-            var parent = survivors[Math.floor(Math.random() * survivors.length)];
-            nextGen.push(parent._mutate(diagnosis));
-          }
-        }
-
-        // Trim
-        population = nextGen.slice(0, popSize);
-
-        // Inject best-ever to prevent regression
-        if (Math.random() < 0.5) {
-          population[population.length - 1] = bestEver._clone();
-        }
-      }
-
-      // Final evaluation of best
-      if (bestEver) {
-        bestEver.name = 'EvoStrategy';
-        bestEver.version = (parseFloat(this.version) + 1.0).toFixed(1);
-        bestEver.description = 'Evolved from ' + this.name + ' (' + generations + ' gens, pop ' + popSize + ')';
-      }
-
-      return {
-        generations: generations,
-        populationSize: popSize,
-        generationLog: generationLog,
-        bestStrategy: bestEver,
-        bestResult: bestEverResult,
-        topStrategies: population.slice(0, 5).map(function(s) {
-          var bt;
-          try { bt = s.backtest(candles); } catch(e) { bt = { totalReturn:0, winRate:0, closedTrades:0 }; }
-          var ers = s.entryRules || [], xrs = s.exitRules || [], frs = s.filterRules || [];
-          return {
-            name: s.name || 'Mutant',
-            params: s.params || {},
-            entryRules: ers.filter(function(r){return r.enabled}).map(function(r){return r.type}),
-            exitRules: xrs.filter(function(r){return r.enabled}).map(function(r){return r.type}),
-            filterRules: frs.filter(function(r){return r.enabled}).map(function(r){return r.type}),
-            totalReturn: bt.totalReturn,
-            winRate: bt.winRate,
-            closedTrades: bt.closedTrades
-          };
-        })
-      };
+      if(bestEver){bestEver.name='EvoStrategy';bestEver.version=(parseFloat(this.version)+1.0).toFixed(1);bestEver.description='Evolved from '+this.name}
+      return{generations:generations,populationSize:popSize,generationLog:generationLog,bestStrategy:bestEver,bestResult:bestEverResult,topStrategies:population.slice(0,5).map(function(s){var bt;try{bt=s.backtest(candles)}catch(e){bt={totalReturn:0,winRate:0,closedTrades:0}};return{name:s.name,params:s.params,totalReturn:bt.totalReturn,winRate:bt.winRate,closedTrades:bt.closedTrades}})}
     },
 
-    // ---- Serialize ----
-    serialize: function() {
-      return JSON.stringify({
-        name: this.name, version: this.version,
-        description: this.description,
-        generation: this.generation, parentInfo: this.parentInfo,
-        params: this.params,
-        entryRules: this.entryRules,
-        exitRules: this.exitRules,
-        filterRules: this.filterRules,
-        savedAt: new Date().toISOString().slice(0, 19)
-      }, null, 2);
+    serialize:function(){
+      return JSON.stringify({name:this.name,version:this.version,description:this.description,generation:this.generation,parentInfo:this.parentInfo,params:this.params,entryRules:this.entryRules,exitRules:this.exitRules,filterRules:this.filterRules,savedAt:new Date().toISOString().slice(0,19)},null,2);
     }
   };
 }
 
-// ---- Default Chaos strategy instance ----
-var ChaosStrategy = createStrategy(
-  'Chaos v2.0', '2.0.0',
-  'Self-evolving Chaos — Alligator + AO + Fractals with rule-based genetic evolution',
-  undefined, undefined, undefined, undefined
-);
-
-// Auto-register
-if (typeof window !== 'undefined') {
-  window.__loadedStrategy = ChaosStrategy;
-}
+// Default strategy instance
+var ChaosStrategy=createStrategy('TradingChaos v1.0','1.0.0','Bill Williams Trading Chaos — Alligator + Fractals + AO + AC',undefined,undefined,undefined,undefined);
+if(typeof window!=='undefined'){window.__loadedStrategy=ChaosStrategy;}
