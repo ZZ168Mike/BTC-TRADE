@@ -1726,26 +1726,37 @@ function loadEvolvedStrategy(){
 }
 
 async function autoLoadEvolved(){
+  // Try fetch first (HTTP), fallback to script tag (file://)
+  var json=null;
   try{
     var resp=await fetch('btc_strategy_evolve.json?_='+Date.now());
-    if(!resp.ok)return;
-    var json=await resp.json();
-    if(!json.name||!json.params)return;
-    var evolved=createStrategy(json.name,json.version,json.description,json.params,json.entryRules,json.exitRules,json.filterRules);
-    evolved.generation=json.generation||0;
-    evolved.parentInfo=json.parentInfo||'server-evolution';
-    // Always prefer server-loaded strategy (single source of truth)
-    // Old localStorage cache may be from incompatible strategy system
-    currentStrategy=evolved;
-    window.__loadedStrategy=evolved;
-    updateStrategyUI();
-    saveCurrentStrategyToCache(); // Sync cache with server
-    addLog('[Server] Strategy: '+evolved.name+' v'+evolved.version+' (gen '+evolved.generation+')');
-    if(json.backtest){
-      addLog('[Server] Backtest: +'+json.backtest.totalReturn+'% win '+json.backtest.winRate+'% trades '+json.backtest.closedTrades);
-    }
-    if(json.evolvedAt)addLog('[Server] Evolved at: '+json.evolvedAt);
-  }catch(e){/* not available */}
+    if(resp.ok)json=await resp.json();
+  }catch(e){}
+  // Script tag fallback for file://
+  if(!json||!json.name){
+    try{
+      json=await new Promise(function(resolve,reject){
+        var s=document.createElement('script');
+        s.src='btc_strategy_evolve.js?_='+Date.now();
+        s.onload=function(){s.remove();if(window.__evolvedStrategy)resolve(window.__evolvedStrategy);else reject('no data');};
+        s.onerror=function(){s.remove();reject('script failed');};
+        document.head.appendChild(s);
+      });
+    }catch(e2){}
+  }
+  if(!json||!json.name||!json.params)return;
+  var evolved=createStrategy(json.name,json.version,json.description,json.params,json.entryRules,json.exitRules,json.filterRules);
+  evolved.generation=json.generation||0;
+  evolved.parentInfo=json.parentInfo||'server-evolution';
+  currentStrategy=evolved;
+  window.__loadedStrategy=evolved;
+  updateStrategyUI();
+  saveCurrentStrategyToCache();
+  addLog('[Server] Strategy: '+evolved.name+' v'+evolved.version+' (gen '+evolved.generation+')');
+  if(json.backtest){
+    addLog('[Server] Backtest: +'+json.backtest.totalReturn+'% win '+json.backtest.winRate+'% trades '+json.backtest.closedTrades);
+  }
+  if(json.evolvedAt)addLog('[Server] Evolved at: '+json.evolvedAt);
 }
 
 let isServerMode=false;

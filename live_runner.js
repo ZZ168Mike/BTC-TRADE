@@ -659,6 +659,8 @@ ${JSON.stringify(lossDetails, null, 2)}
         evolvedAt: new Date().toISOString(), evolutionReason: 'ai-' + losses.length + '-losses'
       };
       fs.writeFileSync(STRATEGY_FILE, JSON.stringify(output, null, 2));
+      // Also write JS file for file:// HTML access
+      fs.writeFileSync(path.join(__dirname, 'btc_strategy_evolve.js'), 'window.__evolvedStrategy=' + JSON.stringify(output) + ';');
       // Persist in state
       if (!gState.strategyHistory) gState.strategyHistory = [];
       gState.strategyHistory.push({ name: gStrategy.name, version: gStrategy.version, deployedAt: Date.now(), reason: 'AI-' + losses.length + 'losses' });
@@ -798,6 +800,10 @@ async function main() {
 
   gState = loadState();
   gStrategy = loadStrategy();
+  // Sync JS file for file:// HTML access
+  if (fs.existsSync(STRATEGY_FILE)) {
+    fs.writeFileSync(path.join(__dirname, 'btc_strategy_evolve.js'), 'window.__evolvedStrategy=' + fs.readFileSync(STRATEGY_FILE, 'utf8') + ';');
+  }
   log('策略: ' + gStrategy.name + ' v' + gStrategy.version);
   log('过滤器: ' + (gStrategy.filterRules.filter(r => r.enabled).map(r => r.type).join(', ') || '无'));
   log('初始资金: $' + gState.initialCapital + ' | 余额: $' + gState.balance.toFixed(2));
