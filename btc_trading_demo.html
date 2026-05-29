@@ -276,6 +276,7 @@ td{padding:3px 7px;border-bottom:1px solid rgba(255,255,255,0.03)}tr:hover td{ba
           <option value="15m">15m</option><option value="1h">1H</option><option value="4h">4H</option><option value="1d">1D</option><option value="all">All</option>
         </select>
         <button onclick="resetPaperAccount()" style="font-size:9px;padding:1px 6px;background:transparent;border:1px solid var(--r);color:var(--r);border-radius:3px;cursor:pointer" title="Reset account to $1000">Reset</button>
+        <button onclick="reconnectServer()" id="btn-reconnect" style="font-size:9px;padding:1px 6px;background:transparent;border:1px solid var(--g);color:var(--g);border-radius:3px;cursor:pointer;display:none" title="Reconnect to live runner">⟳ Sync</button>
       </span>
     </div>
     <div class="card-body chart" id="chart-balance" style="height:100%"></div>
@@ -861,38 +862,24 @@ function savePaperAccount(){
 }
 function resetPaperAccount(){
   if(!confirm('Reset paper account to $1000? This clears all history.'))return;
-  // Clear local immediately
+  // Clear local state immediately
   paperAccount.balance=1000;paperAccount.position=null;
   paperAccount.orders=[];paperAccount.closedTrades=[];
   paperAccount.equityHistory=[];paperAccount.totalTrades=0;
   paperAccount.winningTrades=0;paperAccount.losingTrades=0;
-  paperAccount._resetLock=Date.now(); // Prevent auto-refresh from restoring old data
+  isServerMode=false; // Disconnect from server state
+  stopAutoRefresh();   // Stop periodic sync
+  var btn=document.getElementById('btn-reconnect');if(btn)btn.style.display='inline';
   savePaperAccount();
   renderPosition();renderLiveOrders();renderClosedTrades();
   if(ce)renderPaperEquityChart();
-  addLog('[Paper] Account reset to $1000 (auto-refresh paused 5 min)');
-  // Reset server and apply clean state directly
+  addLog('[Paper] Account reset to $1000 — auto-refresh stopped');
+  // Also reset server-side state (live runner)
   fetch('/reset').then(function(r){return r.json()}).then(function(d){
     if(d.ok&&d.state){
-      var st=d.state;
-      paperAccount.balance=st.balance||1000;
-      paperAccount.position=st.position;
-      paperAccount.orders=st.orders||[];
-      paperAccount.closedTrades=st.closedTrades||[];
-      paperAccount.equityHistory=st.equityHistory||[];
-      paperAccount.totalTrades=st.totalTrades||0;
-      paperAccount.winningTrades=st.winningTrades||0;
-      paperAccount.losingTrades=st.losingTrades||0;
-      paperAccount.orderIdSeq=st.orderIdSeq||0;
-      paperAccount._resetLock=Date.now(); // Extend lock after server sync
-      savePaperAccount();
-      renderPosition();renderLiveOrders();renderClosedTrades();
-      if(ce)renderPaperEquityChart();
-      addLog('[Server] Reset synced — clean state applied');
+      addLog('[Server] Reset synced');
     }
   }).catch(function(){
-    // file:// mode — server not reachable, local reset is enough
-    // _resetLock already set above, prevents re-loading stale server data
     addLog('[Paper] Server not reachable — local reset only');
   });
 }
@@ -1792,10 +1779,6 @@ async function loadServerState(){
     try{st=await _loadStateViaScript();}catch(e2){}
   }
   if(!st||st.initialCapital===undefined)return;
-  // Skip server sync if user recently reset (prevent old data restoration)
-  if(paperAccount._resetLock && (Date.now()-paperAccount._resetLock)<300000){
-    return; // Within 5-minute reset lock, don't override local state
-  }
   isServerMode=true;
   try{
     paperAccount.initialCapital=st.initialCapital||1000;
@@ -1831,10 +1814,23 @@ async function loadServerState(){
 let _autoRefreshTimer=null;
 function startAutoRefresh(){
   if(_autoRefreshTimer)return;
+  addLog('[Sync] Auto-refresh started (every 30s)');
   _autoRefreshTimer=setInterval(async()=>{
     await loadServerState();
     if(currentStrategy)renderStrategyPanel();
   },30000);
+}
+function stopAutoRefresh(){
+  if(_autoRefreshTimer){clearInterval(_autoRefreshTimer);_autoRefreshTimer=null;}
+}
+function reconnectServer(){
+  if(isServerMode)return;
+  isServerMode=true;
+  var btn=document.getElementById('btn-reconnect');if(btn)btn.style.display='none';
+  loadServerState().then(function(){
+    addLog('[Sync] Reconnected — server data loaded');
+    startAutoRefresh();
+  });
 }
 
 
