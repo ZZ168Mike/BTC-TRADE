@@ -8,6 +8,14 @@
     {
       "time": 1780101900000,
       "equity": 1000
+    },
+    {
+      "time": 1780102200000,
+      "equity": 1000
+    },
+    {
+      "time": 1780102500000,
+      "equity": 1000
     }
   ],
   "totalTrades": 0,
@@ -19,6 +27,6 @@
   "lastVolatility": 0,
   "recentTrades": [],
   "recentTradeFeedback": [],
-  "lastRun": "2026-05-30T00:49:23.665Z",
-  "runCount": 2
+  "lastRun": "2026-05-30T00:57:35.106Z",
+  "runCount": 27
 }

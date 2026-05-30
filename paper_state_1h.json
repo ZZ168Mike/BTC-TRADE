@@ -1,0 +1,50 @@
+{
+  "balance": 950,
+  "initialCapital": 1000,
+  "position": {
+    "side": "SHORT",
+    "qty": 0.1359718951531594,
+    "entryPrice": 73544.61,
+    "entryTime": 1780099200000,
+    "_entryIdx": 119,
+    "_layers": 1,
+    "margin": 50,
+    "leverage": 200,
+    "_entryRuleType": "AO穿越零轴向下",
+    "_entryRegime": "ranging",
+    "_entryVolatility": 0.006522416414045439,
+    "_entryAO": -3.8095294118247693
+  },
+  "orders": [
+    {
+      "id": 1,
+      "time": "00:00:00",
+      "side": "Sell (short)",
+      "price": "$73544.6",
+      "qty": "0.135972 BTC",
+      "margin": "$50.00",
+      "leverage": "200x",
+      "status": "filled",
+      "type": "market",
+      "reason": "AO穿越零轴向下"
+    }
+  ],
+  "closedTrades": [],
+  "equityHistory": [
+    {
+      "time": 1780099200000,
+      "equity": 1000
+    }
+  ],
+  "totalTrades": 1,
+  "winningTrades": 0,
+  "losingTrades": 0,
+  "orderIdSeq": 1,
+  "strategyHistory": [],
+  "lastMarketRegime": "neutral",
+  "lastVolatility": 0,
+  "recentTrades": [],
+  "recentTradeFeedback": [],
+  "lastRun": "2026-05-30T00:57:14.530Z",
+  "runCount": 2
+}

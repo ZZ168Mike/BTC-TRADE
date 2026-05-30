@@ -1,20 +1,20 @@
-// ===== LIVE Runner 5m — 5分钟K线实时扫描 =====
-// 每20秒获取Binance最新5m K线，检测信号立即执行
-// node live_runner_5m.js
+// ===== LIVE Runner 1h — 5分钟K线实时扫描 =====
+// 每60秒获取Binance最新1h K线，检测信号立即执行
+// node live_runner_1h.js
 
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 const http = require('http');
 
-const STATE_FILE = path.join(__dirname, 'paper_state_5m.json');
-const STRATEGY_FILE = path.join(__dirname, 'btc_strategy_5m_evolve.json');
+const STATE_FILE = path.join(__dirname, 'paper_state_1h.json');
+const STRATEGY_FILE = path.join(__dirname, 'btc_strategy_1h_evolve.json');
 const STRATEGY_CODE = path.join(__dirname, 'btc_strategy.js');
-const HISTORY_FILE = path.join(__dirname, 'btc_5m_history.json');
-const INTERVAL = '5m';
-const FETCH_LIMIT = 300;
-const SCAN_INTERVAL = 20000;
-const HTTP_PORT = 8081;
+const HISTORY_FILE = path.join(__dirname, 'btc_1h_history.json');
+const INTERVAL = '1h';
+const FETCH_LIMIT = 120;
+const SCAN_INTERVAL = 60000;
+const HTTP_PORT = 8082;
 
 // Load strategy engine
 const strategyCode = fs.readFileSync(STRATEGY_CODE, 'utf8');
@@ -33,8 +33,8 @@ function now() { return new Date().toISOString().slice(11, 23); }
 function log(msg) { console.log('[' + now() + '] ' + msg); }
 
 // ── Fetch ──
-async function fetchRecent5m(limit) {
-  const url = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=' + (limit || FETCH_LIMIT);
+async function fetchRecent1h(limit) {
+  const url = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=' + (limit || FETCH_LIMIT);
   const resp = await fetch(url);
   const raw = await resp.json();
   if (!Array.isArray(raw)) throw new Error('Binance API error: ' + JSON.stringify(raw));
@@ -73,7 +73,7 @@ function saveState() {
   if (s.strategyHistory.length > 20) s.strategyHistory = s.strategyHistory.slice(-20);
   fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
   // Also write JS file for file:// HTML access (bypasses fetch() restrictions)
-  fs.writeFileSync(path.join(__dirname, 'paper_state_5m.js'), 'window.__paperState=' + JSON.stringify(s) + ';');
+  fs.writeFileSync(path.join(__dirname, 'paper_state_1h.js'), 'window.__paperState=' + JSON.stringify(s) + ';');
 }
 
 // ── Strategy ──
@@ -123,7 +123,7 @@ function detectMarketRegime(candles) {
 function detectTrend() {
   if (!gCandles || gCandles.length < 90) return { direction: 'neutral', strength: 0, longBias: 1.0, shortBias: 1.0 };
   const len = gCandles.length;
-  // Use last 120 candles for trend (~10 hours of 5m data)
+  // Use last 60 candles for trend (~2.5 days of 1h data)
   const lookback = Math.min(80, len);
   const recent = gCandles.slice(len - lookback);
 
@@ -366,7 +366,7 @@ function checkAddPosition(signal, candle, idx) {
 async function scan() {
   try {
     // Fetch latest candles
-    const fresh = await fetchRecent5m(FETCH_LIMIT);
+    const fresh = await fetchRecent1h(FETCH_LIMIT);
     const latestTime = fresh[fresh.length - 1].time;
 
     // Skip if same candle as last scan (no new bar yet)
@@ -656,7 +656,7 @@ ${JSON.stringify(lossDetails, null, 2)}
       };
       fs.writeFileSync(STRATEGY_FILE, JSON.stringify(output, null, 2));
       // Also write JS file for file:// HTML access
-      fs.writeFileSync(path.join(__dirname, 'btc_strategy_5m_evolve.js'), 'window.__evolvedStrategy=' + JSON.stringify(output) + ';');
+      fs.writeFileSync(path.join(__dirname, 'btc_strategy_1h_evolve.js'), 'window.__evolvedStrategy=' + JSON.stringify(output) + ';');
       // Persist in state
       if (!gState.strategyHistory) gState.strategyHistory = [];
       gState.strategyHistory.push({ name: gStrategy.name, version: gStrategy.version, deployedAt: Date.now(), reason: 'AI-' + losses.length + 'losses' });
@@ -797,7 +797,7 @@ async function main() {
   gStrategy = loadStrategy();
   // Sync JS file for file:// HTML access
   if (fs.existsSync(STRATEGY_FILE)) {
-    fs.writeFileSync(path.join(__dirname, 'btc_strategy_5m_evolve.js'), 'window.__evolvedStrategy=' + fs.readFileSync(STRATEGY_FILE, 'utf8') + ';');
+    fs.writeFileSync(path.join(__dirname, 'btc_strategy_1h_evolve.js'), 'window.__evolvedStrategy=' + fs.readFileSync(STRATEGY_FILE, 'utf8') + ';');
   }
   log('策略: ' + gStrategy.name + ' v' + gStrategy.version);
   log('过滤器: ' + (gStrategy.filterRules.filter(r => r.enabled).map(r => r.type).join(', ') || '无'));

@@ -1,0 +1,31 @@
+{
+  "name": "TradingChaos-1h",
+  "version": "1.0",
+  "description": "1小时K线 — 混沌操作法完整版 — 200x杠杆 5入口全开 4离场全开",
+  "generation": 0,
+  "parentInfo": "Williams Trading Chaos — 1h timeframe",
+  "locked": { "leverage": 200, "entryRules": ["fractal_breakout","ao_saucer","ao_twin_peaks","ao_zero_cross","alligator_bite"], "exitRules": ["fractal_stop","lips_stop","ao_flip","opposite_fractal"] },
+  "params": { "jawPeriod": 13, "jawShift": 8, "teethPeriod": 8, "teethShift": 5, "lipsPeriod": 5, "lipsShift": 3, "aoFast": 5, "aoSlow": 34, "leverage": 200, "positionSize": 0.05, "maxMargin": 100, "maxLayers": 3, "maxBars": 50 },
+  "entryRules": [
+    { "id": "e1", "type": "fractal_breakout", "params": { "lookback": 3 }, "weight": 1.0, "enabled": true },
+    { "id": "e2", "type": "ao_saucer", "params": {}, "weight": 0.8, "enabled": true },
+    { "id": "e3", "type": "ao_twin_peaks", "params": {}, "weight": 0.7, "enabled": true },
+    { "id": "e4", "type": "ao_zero_cross", "params": {}, "weight": 0.5, "enabled": true },
+    { "id": "e5", "type": "alligator_bite", "params": {}, "weight": 0.6, "enabled": true }
+  ],
+  "exitRules": [
+    { "id": "x1", "type": "fractal_stop", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "x2", "type": "lips_stop", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "x3", "type": "ao_flip", "params": {}, "weight": 0.8, "enabled": true },
+    { "id": "x4", "type": "opposite_fractal", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "x5", "type": "time_exit", "params": {}, "weight": 0.3, "enabled": true }
+  ],
+  "filterRules": [
+    { "id": "f1", "type": "alligator_awake", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "f2", "type": "ao_confirm", "params": {}, "weight": 1.0, "enabled": true },
+    { "id": "f3", "type": "ac_confirm", "params": {}, "weight": 0.5, "enabled": false },
+    { "id": "f4", "type": "volume_ok", "params": {}, "weight": 0.3, "enabled": false },
+    { "id": "f5", "type": "rsi_ok", "params": {}, "weight": 0.2, "enabled": false }
+  ],
+  "savedAt": "2026-05-30T01:00:00"
+}
