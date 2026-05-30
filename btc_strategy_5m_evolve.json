@@ -1,9 +1,9 @@
 {
-  "name": "TradingChaos-15m",
+  "name": "TradingChaos-5m",
   "version": "1.0",
-  "description": "15分钟K线 — 混沌操作法完整版 — 200x杠杆 5入口全开 4离场全开",
+  "description": "5分钟K线 — 混沌操作法完整版 — 200x杠杆 5入口全开 4离场全开",
   "generation": 0,
-  "parentInfo": "Williams Trading Chaos — 15m timeframe",
+  "parentInfo": "Williams Trading Chaos — 5m timeframe",
   "locked": {
     "leverage": 200,
     "entryRules": ["fractal_breakout","ao_saucer","ao_twin_peaks","ao_zero_cross","alligator_bite"],
@@ -18,7 +18,7 @@
     "positionSize": 0.05,
     "maxMargin": 100,
     "maxLayers": 3,
-    "maxBars": 100
+    "maxBars": 200
   },
   "entryRules": [
     { "id": "e1", "type": "fractal_breakout", "params": { "lookback": 3 }, "weight": 1.0, "enabled": true },

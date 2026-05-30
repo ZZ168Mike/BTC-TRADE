@@ -1,0 +1,24 @@
+{
+  "balance": 1000,
+  "initialCapital": 1000,
+  "position": null,
+  "orders": [],
+  "closedTrades": [],
+  "equityHistory": [
+    {
+      "time": 1780101900000,
+      "equity": 1000
+    }
+  ],
+  "totalTrades": 0,
+  "winningTrades": 0,
+  "losingTrades": 0,
+  "orderIdSeq": 0,
+  "strategyHistory": [],
+  "lastMarketRegime": "neutral",
+  "lastVolatility": 0,
+  "recentTrades": [],
+  "recentTradeFeedback": [],
+  "lastRun": "2026-05-30T00:49:23.665Z",
+  "runCount": 2
+}

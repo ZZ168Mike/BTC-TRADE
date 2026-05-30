@@ -1,16 +1,20 @@
-// ===== LIVE Runner — 本地实时扫描 =====
-// 每30秒获取Binance最新K线，检测信号立即执行
-// node live_runner.js
+// ===== LIVE Runner 5m — 5分钟K线实时扫描 =====
+// 每20秒获取Binance最新5m K线，检测信号立即执行
+// node live_runner_5m.js
 
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 const http = require('http');
 
-const STATE_FILE = path.join(__dirname, 'paper_state.json');
-const STRATEGY_FILE = path.join(__dirname, 'btc_strategy_evolve.json');
+const STATE_FILE = path.join(__dirname, 'paper_state_5m.json');
+const STRATEGY_FILE = path.join(__dirname, 'btc_strategy_5m_evolve.json');
 const STRATEGY_CODE = path.join(__dirname, 'btc_strategy.js');
-const HISTORY_FILE = path.join(__dirname, 'btc_15m_history.json');
+const HISTORY_FILE = path.join(__dirname, 'btc_5m_history.json');
+const INTERVAL = '5m';
+const FETCH_LIMIT = 300;
+const SCAN_INTERVAL = 20000;
+const HTTP_PORT = 8081;
 
 // Load strategy engine
 const strategyCode = fs.readFileSync(STRATEGY_CODE, 'utf8');
@@ -29,8 +33,8 @@ function now() { return new Date().toISOString().slice(11, 23); }
 function log(msg) { console.log('[' + now() + '] ' + msg); }
 
 // ── Fetch ──
-async function fetchRecent15m(limit) {
-  const url = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=' + (limit || 150);
+async function fetchRecent5m(limit) {
+  const url = 'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=' + (limit || FETCH_LIMIT);
   const resp = await fetch(url);
   const raw = await resp.json();
   if (!Array.isArray(raw)) throw new Error('Binance API error: ' + JSON.stringify(raw));
@@ -119,7 +123,7 @@ function detectMarketRegime(candles) {
 function detectTrend() {
   if (!gCandles || gCandles.length < 90) return { direction: 'neutral', strength: 0, longBias: 1.0, shortBias: 1.0 };
   const len = gCandles.length;
-  // Use last 80 candles for trend (~20 hours of 15m data)
+  // Use last 120 candles for trend (~10 hours of 5m data)
   const lookback = Math.min(80, len);
   const recent = gCandles.slice(len - lookback);
 
@@ -362,7 +366,7 @@ function checkAddPosition(signal, candle, idx) {
 async function scan() {
   try {
     // Fetch latest candles
-    const fresh = await fetchRecent15m(150);
+    const fresh = await fetchRecent5m(FETCH_LIMIT);
     const latestTime = fresh[fresh.length - 1].time;
 
     // Skip if same candle as last scan (no new bar yet)
@@ -779,7 +783,6 @@ function startHttpServer(port) {
 
 // ── Main ──
 async function main() {
-  const HTTP_PORT = 8080;
   startHttpServer(HTTP_PORT);
 
   console.log('');
@@ -812,7 +815,7 @@ async function main() {
   printStatus();
 
   // Scan loop: every 30 seconds
-  const LOOP_INTERVAL = 30000;
+  const LOOP_INTERVAL = SCAN_INTERVAL;
   setInterval(async () => {
     await scan().catch(() => {});
     printStatus();
