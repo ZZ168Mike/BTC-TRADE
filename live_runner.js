@@ -477,7 +477,7 @@ async function aiEvolve() {
     filterRules: gStrategy.filterRules.map(r => ({ id: r.id, type: r.type, weight: r.weight, enabled: r.enabled }))
   };
 
-  // Trade detail for AI
+  // Trade detail for AI — BOTH winning and losing
   const lossDetails = losses.slice(-10).map(t => ({
     entryType: t.entryType, side: t.side || 'unknown',
     pnl: '$' + (t.pnl || 0).toFixed(2), pnlPct: (t.pnlPct || 0).toFixed(1) + '%',
@@ -485,18 +485,40 @@ async function aiEvolve() {
     marketRegime: t.entryRegime || 'unknown', volatility: ((t.entryVolatility || 0) * 100).toFixed(2) + '%',
     entryAO: (t.entryAO || 0).toFixed(0)
   }));
+  const winDetails = wins.slice(-5).map(t => ({
+    entryType: t.entryType, side: t.side || 'unknown',
+    pnl: '$' + (t.pnl || 0).toFixed(2), pnlPct: (t.pnlPct || 0).toFixed(1) + '%',
+    exitReason: t.reason, barsHeld: t.barsHeld || 0,
+    marketRegime: t.entryRegime || 'unknown'
+  }));
+
+  // Anti-spiral: check last 3 evolution directions
+  if (!gState._evoHistory) gState._evoHistory = [];
+  const recentEvos = gState._evoHistory.slice(-3);
+  const allTighten = recentEvos.length >= 3 && recentEvos.every(e => e.direction === 'tighten');
+  const allLoosen = recentEvos.length >= 3 && recentEvos.every(e => e.direction === 'loosen');
 
   const trend = detectTrend();
   const marketCtx = {
     trend: trend.direction, trendStrength: trend.strength.toFixed(2),
-    longBias: trend.longBias, shortBias: trend.shortBias,
     volatility: (gRegime.v * 100).toFixed(2) + '%', regime: gRegime.r,
     balance: '$' + gState.balance.toFixed(2), initialCapital: '$' + gState.initialCapital,
     totalReturn: ((gState.balance - gState.initialCapital) / gState.initialCapital * 100).toFixed(1) + '%',
-    stats: { total: allFeedback.length, wins: wins.length, losses: lossTrades.length, totalPnl: '$' + totalPnl.toFixed(2) }
+    stats: { total: allFeedback.length, wins: wins.length, losses: lossTrades.length, winRate: (wins.length/(wins.length+lossTrades.length)*100).toFixed(1)+'%' }
   };
 
-  const prompt = `你是比特币交易策略优化专家。当前使用比尔·威廉姆斯混沌操作法（Alligator + AO + Fractals），200倍杠杆，15分钟K线，双向交易。
+  const antiSpiralWarning = allTighten
+    ? '\n⚠️ 严重警告：过去3代都在收紧（降权重、开过滤）。这是负反馈螺旋！本次必须反向操作：提高权重、关闭不必要的过滤器、放大交易机会。目标是找到能赚钱的信号，不是消灭所有信号。'
+    : (allLoosen ? '\n⚠️ 提示：过去3代都在放松，注意不要过度激进。' : '');
+
+  const prompt = `你是比特币交易策略优化专家。威廉姆斯混沌操作法（Alligator+AO+Fractals+AC），200倍杠杆，双向交易，模拟盘。
+
+## 核心目标：增加盈利，不是减少亏损
+模拟盘的意义是用亏损换取经验和数据。你的任务是：
+1. 分析哪些入场信号在赚钱 → 加强它们
+2. 分析哪些出场时机太早/太晚 → 调整它们
+3. 找到盈利模式并放大，而不是收缩交易
+${antiSpiralWarning}
 
 ## 策略配置
 \`\`\`json
@@ -508,30 +530,25 @@ ${JSON.stringify(strategySnapshot, null, 2)}
 ${JSON.stringify(marketCtx, null, 2)}
 \`\`\`
 
-## 亏损交易详情
+## 盈利交易（这些是应该强化的模式！）
+\`\`\`json
+${JSON.stringify(winDetails, null, 2)}
+\`\`\`
+
+## 亏损交易（需要改进的）
 \`\`\`json
 ${JSON.stringify(lossDetails, null, 2)}
 \`\`\`
 
-## 可用规则
-- 入场(5个全部启用不可禁用): fractal_breakout, ao_saucer, ao_twin_peaks, ao_zero_cross, alligator_bite
-- 离场(4个全部启用不可禁用): fractal_stop, lips_stop, ao_flip, opposite_fractal
-- 过滤器(可开关): alligator_awake, ao_confirm, ac_confirm, volume_ok, rsi_ok
-- 可调参数: jawPeriod(7-21), teethPeriod(5-13), lipsPeriod(3-8), aoFast(3-8), aoSlow(21-55), maxBars(60-200), maxMargin(50-200)
+## 约束
+- leverage=200/positionSize=0.05/maxLayers=3 不可变
+- 5个入场全部enabled=true, 4个核心离场全部enabled=true
+- 入场权重范围: 0.5~2.0（最低0.5，不能更低！）
+- 离场权重范围: 0.3~2.0
+- 每代只调整2-4个参数，小步快跑
+- 如果盈利交易集中在某类信号，必须提高其权重
 
-## 不可变约束（绝对不能改动）
-- leverage 永远=200（不可变）
-- 5个入场规则永远全部enabled=true（不可禁用）
-- 4个核心离场规则(fractal_stop,lips_stop,ao_flip,opposite_fractal)永远全部enabled=true（不可禁用）
-- positionSize 永远=0.05, maxLayers 永远=3
-
-## 可优化方向
-- 调整入场/离场规则权重(0.1-2.0)来优化信号优先级
-- 开关过滤器来适应不同市场环境
-- 微调鳄鱼线/AO周期参数来匹配当前波动率
-
-请分析亏损原因，通过调整权重和过滤器来增加未来交易胜率。返回纯JSON:
-
+返回纯JSON:
 {"analysis":"一句话分析","paramChanges":{"param":value},"enableFilters":[],"disableFilters":[],"weightChanges":{"ruleType":0.8}}`;
 
   try {
@@ -547,7 +564,7 @@ ${JSON.stringify(lossDetails, null, 2)}
         max_tokens: 2000,
         temperature: 0.3,
         messages: [
-          { role: 'system', content: '你是比特币交易策略优化专家。你只返回JSON，不含任何其他文本。' },
+          { role: 'system', content: '你是比特币交易策略优化专家。核心目标：增加盈利，不是减少亏损。分析盈利交易找到可复制的模式并强化它。你只返回JSON。入场权重永远>=0.5。' },
           { role: 'user', content: prompt }
         ]
       })
@@ -621,15 +638,20 @@ ${JSON.stringify(lossDetails, null, 2)}
     for (const r of gStrategy.entryRules) r.enabled = true;
     for (const r of gStrategy.exitRules) r.enabled = true;
 
-    // Weight changes
+    // Weight changes with entry floor at 0.5
+    let tightenCount = 0, loosenCount = 0;
     if (changes.weightChanges) {
       for (const k in changes.weightChanges) {
         for (const cat of ruleCategories) {
           const rule = cat.arr.find(r => r.type === k);
           if (rule) {
             const oldW = rule.weight;
-            rule.weight = +Math.max(0.1, Math.min(2.0, changes.weightChanges[k])).toFixed(2);
-            log('  权重 ' + cat.name + '/' + k + ': ' + oldW + ' → ' + rule.weight);
+            const isEntry = cat.name === 'entryRules';
+            const floor = isEntry ? 0.5 : 0.1; // 入场权重最低0.5
+            rule.weight = +Math.max(floor, Math.min(2.0, changes.weightChanges[k])).toFixed(2);
+            if (rule.weight < oldW) tightenCount++;
+            else if (rule.weight > oldW) loosenCount++;
+            log('  权重 ' + cat.name + '/' + k + ': ' + oldW + ' → ' + rule.weight + (isEntry?' [min0.5]':''));
             applied++;
           }
         }
@@ -638,6 +660,11 @@ ${JSON.stringify(lossDetails, null, 2)}
 
     if (applied > 0) {
       gStrategy.generation = (gStrategy.generation || 0) + 1;
+      // Track evolution direction for anti-spiral
+      if (!gState._evoHistory) gState._evoHistory = [];
+      const direction = tightenCount > loosenCount ? 'tighten' : (loosenCount > tightenCount ? 'loosen' : 'neutral');
+      gState._evoHistory.push({ gen: gStrategy.generation, direction, tightenCount, loosenCount, time: Date.now() });
+      if (gState._evoHistory.length > 10) gState._evoHistory.shift();
       gStrategy.version = (parseFloat(gStrategy.version || '1.0') + 0.1).toFixed(1);
       gStrategy.name = 'Evo-AI-' + new Date().toISOString().slice(0, 10);
       gStrategy.description = 'AI优化: ' + (changes.analysis || '').slice(0, 80);
